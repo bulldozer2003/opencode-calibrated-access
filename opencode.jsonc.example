@@ -1,0 +1,20 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "permission": {
+    "bash": "ask"
+  },
+  "plugin": [
+    [
+      "opencode-calibrated-access",
+      {
+        "typesafeApiKey": "apikey_...your-key-here...",
+        "riskThresholdBash": 0.4,
+        "riskThresholdDirectory": 0.3,
+        "typesafeModel": "jev-latest",
+        "sessionApprovals": true,
+        "contextMessageCount": 3,
+        "diagnosticsPath": "/home/you/.opencode/calibrated-access.jsonl"
+      }
+    ]
+  ]
+}

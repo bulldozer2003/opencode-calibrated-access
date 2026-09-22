@@ -1,0 +1,44 @@
+{
+  "name": "opencode-calibrated-access",
+  "version": "0.1.0",
+  "description": "OpenCode plugin that uses TypeSafe AI to rate command safety via a likelihood/impact risk matrix, with per-tool thresholds and auto-alternatives on rejection.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src/",
+    "LICENSE",
+    "README.md",
+    "opencode.jsonc.example"
+  ],
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "bun test",
+    "test:watch": "bun test --watch",
+    "prepublishOnly": "bun test && bun run check"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "permissions",
+    "safety",
+    "typesafe-ai",
+    "risk-matrix"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@opencode-ai/plugin": "latest",
+    "@opencode-ai/sdk": "latest",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0",
+    "bun-types": "latest"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}
