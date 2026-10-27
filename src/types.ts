@@ -35,11 +35,18 @@ export interface ReviewInput {
   }
 }
 
+export type ProviderType = "typesafe" | "openai-compatible"
+
 export interface CalibratedConfig {
   riskThresholdBash: number
   riskThresholdDirectory: number
-  typesafeModel: string
-  typesafeApiKey: string | undefined
+  provider: ProviderType
+  systemOneBaseUrl: string
+  systemOneModel: string
+  systemOneApiKey: string | undefined
+  openaiBaseUrl: string
+  openaiModel: string | undefined
+  openaiApiKey: string | undefined
   sessionApprovals: boolean
   contextMessageCount: number
   diagnosticsPath: string | undefined
