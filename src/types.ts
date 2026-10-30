@@ -45,7 +45,7 @@ export interface CalibratedConfig {
   systemOneModel: string
   systemOneApiKey: string | undefined
   openaiBaseUrl: string
-  openaiModel: string | undefined
+  openaiModel: string
   openaiApiKey: string | undefined
   sessionApprovals: boolean
   contextMessageCount: number

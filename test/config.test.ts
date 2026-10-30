@@ -119,6 +119,11 @@ describe("parseConfig", () => {
     expect(config.openaiBaseUrl).toBe("https://api.openai.com/v1")
   })
 
+  test("defaults openaiModel to gpt-4o-mini", () => {
+    const config = parseConfig({})
+    expect(config.openaiModel).toBe("gpt-4o-mini")
+  })
+
   test("reads openai api key from environment", () => {
     process.env.OPENAI_API_KEY = "env-openai-key"
     const config = parseConfig({ provider: "openai-compatible" })

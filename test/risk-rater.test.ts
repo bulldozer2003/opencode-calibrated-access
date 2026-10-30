@@ -10,7 +10,7 @@ const testConfig: CalibratedConfig = {
   systemOneModel: "jev-latest",
   systemOneApiKey: "sk-test",
   openaiBaseUrl: "https://api.openai.com/v1",
-  openaiModel: undefined,
+  openaiModel: "gpt-4o-mini",
   openaiApiKey: undefined,
   sessionApprovals: true,
   contextMessageCount: 3,

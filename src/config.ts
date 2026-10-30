@@ -34,7 +34,7 @@ export function parseConfig(options: Readonly<Record<string, unknown>>): Calibra
       process.env.TYPESAFE_API_KEY,
     ),
     openaiBaseUrl: nonEmptyString(options.openaiBaseUrl, DEFAULT_OPENAI_BASE_URL, "openaiBaseUrl"),
-    openaiModel: stringOption(options.openaiModel, undefined),
+    openaiModel: nonEmptyString(options.openaiModel, "gpt-4o-mini", "openaiModel"),
     openaiApiKey: stringOption(options.openaiApiKey, process.env.OPENAI_API_KEY),
     sessionApprovals: options.sessionApprovals !== false,
     contextMessageCount: boundedInteger(

@@ -36,7 +36,7 @@ export async function rateCommand(
 }
 
 function sanitizeErrorText(text: string): string {
-  const cleaned = text.replace(/(?:sk-|apikey_)[a-zA-Z0-9_-]{10,}/gi, "[KEY_REDACTED]")
+  const cleaned = text.replace(/(?:sk-|apikey_|typesafe_)[a-zA-Z0-9_-]{10,}/gi, "[KEY_REDACTED]")
   return cleaned.length > 500 ? cleaned.slice(0, 500) + "..." : cleaned
 }
 
@@ -149,7 +149,7 @@ function isOpenAIHost(url: string): boolean {
 }
 
 function buildBaseUrl(raw: string): string {
-  return raw.replace(/\/+$/, "")
+  return raw.replace(/\/+$/, "").replace(/\/systemone\/?$/i, "")
 }
 
 async function rateCommandOpenAI(
@@ -164,7 +164,7 @@ async function rateCommandOpenAI(
     throw new Error("Calibrated Access: OPENAI_API_KEY is not configured for openai-compatible provider.")
   }
 
-  const model = config.openaiModel ?? "gpt-4o-mini"
+  const model = config.openaiModel
 
   const systemPrompt = `You evaluate shell commands for safety. Return a JSON object with two scores on a scale of 0 to 4:
 
