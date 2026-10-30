@@ -15,8 +15,8 @@ function skipIfNoKey() {
 }
 
 const config = parseConfig({
-  typesafeApiKey: apiKey,
-  typesafeModel: "jev-latest",
+  systemOneApiKey: apiKey,
+  systemOneModel: "jev-latest",
 })
 
 /*
@@ -227,9 +227,9 @@ describe("rateCommand (integration)", () => {
 
   test("rejects invalid API key", async () => {
     const badConfig = parseConfig({
-      typesafeApiKey: "apikey_bad",
-      typesafeModel: "jev-latest",
+      systemOneApiKey: "apikey_bad",
+      systemOneModel: "jev-latest",
     })
-    expect(rateCommand("ls", [], badConfig)).rejects.toThrow(/TypeSafe API error/)
+    expect(rateCommand("ls", [], badConfig)).rejects.toThrow(/System One API error/)
   }, 10_000)
 })
