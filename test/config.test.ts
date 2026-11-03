@@ -51,6 +51,11 @@ describe("parseConfig", () => {
     expect(config.systemOneModel).toBe("jev-1.14")
   })
 
+  test("blank systemOneModel falls back to typesafeModel alias", () => {
+    const config = parseConfig({ systemOneModel: "", typesafeModel: "jev-1.13" })
+    expect(config.systemOneModel).toBe("jev-1.13")
+  })
+
   test("blank typesafeModel alias falls through to default rather than breaking backward compat", () => {
     const config = parseConfig({ typesafeModel: "   " })
     expect(config.systemOneModel).toBe("jev-latest")
@@ -71,6 +76,11 @@ describe("parseConfig", () => {
   test("systemOneApiKey takes precedence over typesafeApiKey", () => {
     const config = parseConfig({ systemOneApiKey: "sk-new", typesafeApiKey: "sk-old" })
     expect(config.systemOneApiKey).toBe("sk-new")
+  })
+
+  test("blank systemOneApiKey falls back to typesafeApiKey alias", () => {
+    const config = parseConfig({ systemOneApiKey: "", typesafeApiKey: "sk-old" })
+    expect(config.systemOneApiKey).toBe("sk-old")
   })
 
   test("reads System One API key from TYPESAFE_API_KEY env", () => {

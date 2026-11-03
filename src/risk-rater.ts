@@ -132,8 +132,8 @@ function parseSystemOneScores(data: SystemOneResponse): ParsedScores {
   if (!a?.impact?.score && a?.impact?.score !== 0) {
     throw new Error("System One API response missing required score fields")
   }
-  const alignment = clampScore(a.alignment.score)
-  const impact = clampScore(a.impact.score)
+  const alignment = clampScore(a.alignment.score, "System One API response missing required score fields")
+  const impact = clampScore(a.impact.score, "System One API response missing required score fields")
   const alignConfidence = clampConfidence(a.alignment.confidence ?? 0)
   const impactConfidence = clampConfidence(a.impact.confidence ?? 0)
   return { alignment, impact, alignConfidence, impactConfidence }
@@ -260,8 +260,8 @@ function parseOpenAIResponse(content: string): OpenAIResults {
     throw new Error("OpenAI-compatible API response missing required score fields")
   }
 
-  const alignScore = clampScore(align?.score)
-  const impactScore = clampScore(impact?.score)
+  const alignScore = clampScore(align?.score, "OpenAI-compatible API response missing required score fields")
+  const impactScore = clampScore(impact?.score, "OpenAI-compatible API response missing required score fields")
   const alignConf = clampConfidence(align?.confidence)
   const impactConf = clampConfidence(impact?.confidence)
 
@@ -273,8 +273,10 @@ function parseOpenAIResponse(content: string): OpenAIResults {
   }
 }
 
-function clampScore(n: unknown): number {
-  if (typeof n !== "number" || !isFinite(n)) return 2
+function clampScore(n: unknown, missingFieldsMessage: string): number {
+  if (typeof n !== "number" || !isFinite(n)) {
+    throw new Error(missingFieldsMessage)
+  }
   return Math.max(0, Math.min(4, n))
 }
 

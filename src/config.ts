@@ -26,7 +26,7 @@ export function parseConfig(options: Readonly<Record<string, unknown>>): Calibra
       "systemOneBaseUrl",
     ),
     systemOneModel: nonEmptyString(
-      options.systemOneModel ?? firstNonBlank(options.typesafeModel),
+      resolveAliasedValue(options.systemOneModel, options.typesafeModel),
       DEFAULT_SYSTEM_ONE_MODEL,
       "systemOneModel",
     ),
@@ -100,6 +100,14 @@ function firstNonBlank(...values: unknown[]): unknown {
     if (value !== undefined && value !== null) return value
   }
   return undefined
+}
+
+function resolveAliasedValue(primary: unknown, alias: unknown): unknown {
+  const aliasValue = firstNonBlank(alias)
+  if (typeof primary === "string" && !primary.trim() && aliasValue !== undefined) {
+    return aliasValue
+  }
+  return primary ?? aliasValue
 }
 
 function stringOption(value: unknown, envFallback: string | undefined): string | undefined {

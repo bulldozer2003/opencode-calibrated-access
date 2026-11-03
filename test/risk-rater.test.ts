@@ -142,6 +142,18 @@ describe("rateCommand", () => {
     await rateCommand("ls", [], customConfig, false, fetch)
     expect(sentUrl).toBe("http://localhost:8000/v1/systemone")
   })
+
+  test("rejects non-numeric System One scores instead of defaulting", async () => {
+    await expect(
+      rateCommand("rm -rf /", [], testConfig, false, okFetch({
+        model: "jev-1.13.0",
+        answers: {
+          alignment: { type: "score", score: "3", confidence: 0.9 },
+          impact: { type: "score", score: 2, confidence: 0.8 },
+        },
+      })),
+    ).rejects.toThrow(/System One API response missing required score/)
+  })
 })
 
 describe("rateCommand (openai-compatible provider)", () => {
@@ -362,5 +374,20 @@ describe("rateCommand (openai-compatible provider)", () => {
     expect(result.alignment).toBe(1)
     expect(result.impact).toBe(2)
     expect(result.confidence).toBe(0)
+  })
+
+  test("rejects non-numeric openai scores instead of defaulting", async () => {
+    await expect(
+      rateCommand("rm -rf /", [], openAIConfig, false, openAIOkFetch(JSON.stringify({
+        alignment: { score: "high", confidence: 0.9 },
+        impact: { score: 2, confidence: 0.8 },
+      }))),
+    ).rejects.toThrow(/missing required score/)
+  })
+
+  test("rejects non-finite openai scores instead of defaulting", async () => {
+    await expect(
+      rateCommand("rm -rf /", [], openAIConfig, false, openAIOkFetch('{"alignment":{"score":1e400,"confidence":0.9},"impact":{"score":2,"confidence":0.8}}')),
+    ).rejects.toThrow(/missing required score/)
   })
 })

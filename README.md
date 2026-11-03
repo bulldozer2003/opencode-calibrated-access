@@ -107,7 +107,7 @@ src/
 ## Testing
 
 ```bash
-bun test              # 128 tests (97 unit + 31 integration)
+bun test              # 133 tests (102 unit + 31 integration)
 ```
 
 Integration tests hit the real TypeSafe API using the configured key. They are skipped if no key is available.
