@@ -7,14 +7,47 @@
     [
       "opencode-calibrated-access",
       {
-        "typesafeApiKey": "apikey_...your-key-here...",
+        // ── Provider 1: System One (Jev / Kev / SemIf / Von etc.) ──────────
+        // Default provider. Speaks the /v1/systemone protocol used by
+        // TypeSafe, OpenRouter, Kev, SemIf, NanoJev, Von, and others.
+        // Backward-compat: "typesafeApiKey" and "typesafeModel" also work
+        // and map to systemOneApiKey / systemOneModel.
+
+        "provider": "typesafe",                                    // "typesafe" (default) or "openai-compatible"
+        "systemOneApiKey": "apikey_...or-sk-or-...or-local-key",   // also reads TYPESAFE_API_KEY env
+        "systemOneModel": "jev-latest",                            // jev-latest, jev-1.14, typesafe/jev-1.14
+        "systemOneBaseUrl": "https://api.typesafe.ai/v1",           // see notes below
+
+        // ── Provider 2: OpenAI-compatible chat fallback ──────────────
+        // For general LLMs (gpt-4o-mini, etc.) when no System One model
+        // is available. NOT a Jev clone — uses chat completions, not the
+        // System One protocol, so scores are less calibrated.
+        //
+        // "provider": "openai-compatible",
+        // "openaiApiKey": "sk-...",       // also reads OPENAI_API_KEY env
+        // "openaiModel": "gpt-4o-mini",
+        // "openaiBaseUrl": "https://api.openai.com/v1",
+
+        // ── Common options ───────────────────────────────────────────
         "riskThresholdBash": 0.4,
         "riskThresholdDirectory": 0.3,
-        "typesafeModel": "jev-latest",
         "sessionApprovals": true,
         "contextMessageCount": 3,
         "diagnosticsPath": "/home/you/.opencode/calibrated-access.jsonl"
       }
     ]
   ]
+
+  // ── System One base URLs by provider ───────────────────────────────
+  //
+  // TypeSafe native:  https://api.typesafe.ai/v1              (default)
+  // OpenRouter Jev:   https://openrouter.ai/api/v1            model: typesafe/jev-1.14
+  // Local Kev:        http://localhost:8000/v1                model: kev
+  // Local SemIf:      http://localhost:5000/v1                model: semif
+  // Local NanoJev:    http://localhost:8080/v1                model: nanojev
+  // Local Von:        http://localhost:3000/v1                model: von
+  //
+  // All append /systemone automatically. The same protocol is used
+  // by TypeSafe, OpenRouter, Kev, SemIf, NanoJev, Von, Laya, and
+  // any other System One-compatible decision model.
 }

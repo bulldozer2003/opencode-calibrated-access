@@ -47,7 +47,7 @@ export async function reviewAndReply(
       cache.add(rootSessionID, request.action, request.always)
     }
 
-    writeDiag(config, request, startedAt, decision, sourceLabel(policyDecision, cached))
+    writeDiag(config, request, startedAt, decision, sourceLabel(policyDecision, cached, config))
 
     if (decision.kind === "allow") {
       await client.reply({ sessionID: request.sessionID, requestID: request.id, reply: "once", protocol: request.protocol })
@@ -99,10 +99,10 @@ function reusableCacheKey(request: PermissionRequest, rootSessionID: string): st
   return `${rootSessionID}::${request.action}::${JSON.stringify([...request.always].sort())}`
 }
 
-function sourceLabel(policy: unknown, cached: unknown): string {
+function sourceLabel(policy: unknown, cached: unknown, config: CalibratedConfig): string {
   if (policy) return "policy"
   if (cached) return "session"
-  return "typesafe"
+  return config.provider
 }
 
 function writeDiag(config: CalibratedConfig, request: PermissionRequest, startedAt: number, decision: Decision, source: string): void {

@@ -1,9 +1,13 @@
-import type { CalibratedConfig } from "./types.ts"
+import type { CalibratedConfig, ProviderType } from "./types.ts"
 
 const DEFAULT_RISK_THRESHOLD_BASH = 0.4
 const DEFAULT_RISK_THRESHOLD_DIRECTORY = 0.3
-const DEFAULT_TYPESAFE_MODEL = "jev-latest"
+const DEFAULT_SYSTEM_ONE_BASE_URL = "https://api.typesafe.ai/v1"
+const DEFAULT_SYSTEM_ONE_MODEL = "jev-latest"
 const DEFAULT_CONTEXT_MESSAGE_COUNT = 3
+const DEFAULT_PROVIDER: ProviderType = "typesafe"
+const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
+const DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
 
 export function parseConfig(options: Readonly<Record<string, unknown>>): CalibratedConfig {
   return {
@@ -15,8 +19,24 @@ export function parseConfig(options: Readonly<Record<string, unknown>>): Calibra
       1,
       "riskThresholdDirectory",
     ),
-    typesafeModel: nonEmptyString(options.typesafeModel, DEFAULT_TYPESAFE_MODEL, "typesafeModel"),
-    typesafeApiKey: stringOption(options.typesafeApiKey, process.env.TYPESAFE_API_KEY),
+    provider: parseProvider(options.provider),
+    systemOneBaseUrl: nonEmptyString(
+      options.systemOneBaseUrl,
+      DEFAULT_SYSTEM_ONE_BASE_URL,
+      "systemOneBaseUrl",
+    ),
+    systemOneModel: nonEmptyString(
+      resolveAliasedValue(options.systemOneModel, options.typesafeModel),
+      DEFAULT_SYSTEM_ONE_MODEL,
+      "systemOneModel",
+    ),
+    systemOneApiKey: stringOption(
+      firstNonBlank(options.systemOneApiKey, options.typesafeApiKey),
+      process.env.TYPESAFE_API_KEY,
+    ),
+    openaiBaseUrl: nonEmptyString(options.openaiBaseUrl, DEFAULT_OPENAI_BASE_URL, "openaiBaseUrl"),
+    openaiModel: nonEmptyString(options.openaiModel, DEFAULT_OPENAI_MODEL, "openaiModel"),
+    openaiApiKey: stringOption(options.openaiApiKey, process.env.OPENAI_API_KEY),
     sessionApprovals: options.sessionApprovals !== false,
     contextMessageCount: boundedInteger(
       options.contextMessageCount,
@@ -27,6 +47,12 @@ export function parseConfig(options: Readonly<Record<string, unknown>>): Calibra
     ),
     diagnosticsPath: stringOption(options.diagnosticsPath, undefined),
   }
+}
+
+function parseProvider(value: unknown): ProviderType {
+  if (value === undefined) return DEFAULT_PROVIDER
+  if (value === "typesafe" || value === "openai-compatible") return value
+  throw new Error(`Calibrated Access provider must be "typesafe" or "openai-compatible"`)
 }
 
 function boundedFloat(
@@ -63,6 +89,25 @@ function nonEmptyString(value: unknown, fallback: string, name: string): string 
     throw new Error(`Calibrated Access ${name} must be a non-empty string`)
   }
   return value.trim()
+}
+
+function firstNonBlank(...values: unknown[]): unknown {
+  for (const value of values) {
+    if (typeof value === "string") {
+      if (value.trim().length > 0) return value.trim()
+      continue
+    }
+    if (value !== undefined && value !== null) return value
+  }
+  return undefined
+}
+
+function resolveAliasedValue(primary: unknown, alias: unknown): unknown {
+  const aliasValue = firstNonBlank(alias)
+  if (typeof primary === "string" && !primary.trim() && aliasValue !== undefined) {
+    return aliasValue
+  }
+  return primary ?? aliasValue
 }
 
 function stringOption(value: unknown, envFallback: string | undefined): string | undefined {

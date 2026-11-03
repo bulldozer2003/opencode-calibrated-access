@@ -8,8 +8,10 @@ describe("parseConfig", () => {
     const config = parseConfig({})
     expect(config.riskThresholdBash).toBe(0.4)
     expect(config.riskThresholdDirectory).toBe(0.3)
-    expect(config.typesafeModel).toBe("jev-latest")
-    expect(config.typesafeApiKey).toBeUndefined()
+    expect(config.provider).toBe("typesafe")
+    expect(config.systemOneBaseUrl).toBe("https://api.typesafe.ai/v1")
+    expect(config.systemOneModel).toBe("jev-latest")
+    expect(config.systemOneApiKey).toBeUndefined()
     expect(config.sessionApprovals).toBe(true)
     expect(config.contextMessageCount).toBe(3)
     expect(config.diagnosticsPath).toBeUndefined()
@@ -29,26 +31,68 @@ describe("parseConfig", () => {
     expect(() => parseConfig({ riskThresholdDirectory: 1.1 })).toThrow(/riskThresholdDirectory/)
   })
 
-  test("accepts custom TypeSafe model", () => {
+  test("accepts custom System One model via systemOneModel", () => {
+    const config = parseConfig({ systemOneModel: "jev-1.14" })
+    expect(config.systemOneModel).toBe("jev-1.14")
+  })
+
+  test("rejects empty System One model", () => {
+    expect(() => parseConfig({ systemOneModel: "" })).toThrow(/systemOneModel/)
+    expect(() => parseConfig({ systemOneModel: "   " })).toThrow(/systemOneModel/)
+  })
+
+  test("backward compat: typesafeModel maps to systemOneModel", () => {
     const config = parseConfig({ typesafeModel: "jev-1.13.0" })
-    expect(config.typesafeModel).toBe("jev-1.13.0")
+    expect(config.systemOneModel).toBe("jev-1.13.0")
   })
 
-  test("rejects empty TypeSafe model", () => {
-    expect(() => parseConfig({ typesafeModel: "" })).toThrow(/typesafeModel/)
-    expect(() => parseConfig({ typesafeModel: "   " })).toThrow(/typesafeModel/)
+  test("systemOneModel takes precedence over typesafeModel", () => {
+    const config = parseConfig({ systemOneModel: "jev-1.14", typesafeModel: "jev-1.13.0" })
+    expect(config.systemOneModel).toBe("jev-1.14")
   })
 
-  test("accepts API key from options or env", () => {
+  test("blank systemOneModel falls back to typesafeModel alias", () => {
+    const config = parseConfig({ systemOneModel: "", typesafeModel: "jev-1.13" })
+    expect(config.systemOneModel).toBe("jev-1.13")
+  })
+
+  test("blank typesafeModel alias falls through to default rather than breaking backward compat", () => {
+    const config = parseConfig({ typesafeModel: "   " })
+    expect(config.systemOneModel).toBe("jev-latest")
+  })
+
+  test("blank typesafeApiKey alias falls through to env or undefined rather than shadowing", () => {
+    const saved = process.env.TYPESAFE_API_KEY
+    delete process.env.TYPESAFE_API_KEY
+    expect(parseConfig({ typesafeApiKey: "   " }).systemOneApiKey).toBeUndefined()
+    process.env.TYPESAFE_API_KEY = saved
+  })
+
+  test("backward compat: typesafeApiKey maps to systemOneApiKey", () => {
     const config = parseConfig({ typesafeApiKey: "sk-test" })
-    expect(config.typesafeApiKey).toBe("sk-test")
+    expect(config.systemOneApiKey).toBe("sk-test")
   })
 
-  test("reads API key from environment", () => {
+  test("systemOneApiKey takes precedence over typesafeApiKey", () => {
+    const config = parseConfig({ systemOneApiKey: "sk-new", typesafeApiKey: "sk-old" })
+    expect(config.systemOneApiKey).toBe("sk-new")
+  })
+
+  test("blank systemOneApiKey falls back to typesafeApiKey alias", () => {
+    const config = parseConfig({ systemOneApiKey: "", typesafeApiKey: "sk-old" })
+    expect(config.systemOneApiKey).toBe("sk-old")
+  })
+
+  test("reads System One API key from TYPESAFE_API_KEY env", () => {
     process.env.TYPESAFE_API_KEY = "env-key-test"
     const config = parseConfig({})
-    expect(config.typesafeApiKey).toBe("env-key-test")
+    expect(config.systemOneApiKey).toBe("env-key-test")
     delete process.env.TYPESAFE_API_KEY
+  })
+
+  test("custom systemOneBaseUrl", () => {
+    const config = parseConfig({ systemOneBaseUrl: "https://openrouter.ai/api/v1" })
+    expect(config.systemOneBaseUrl).toBe("https://openrouter.ai/api/v1")
   })
 
   test("disables session approvals", () => {
@@ -65,5 +109,47 @@ describe("parseConfig", () => {
   test("enables diagnostics with explicit path", () => {
     const config = parseConfig({ diagnosticsPath: "/tmp/decisions.jsonl" })
     expect(config.diagnosticsPath).toBe("/tmp/decisions.jsonl")
+  })
+
+  test("defaults to typesafe provider", () => {
+    const config = parseConfig({})
+    expect(config.provider).toBe("typesafe")
+  })
+
+  test("accepts openai-compatible provider", () => {
+    const config = parseConfig({ provider: "openai-compatible" })
+    expect(config.provider).toBe("openai-compatible")
+  })
+
+  test("rejects invalid provider", () => {
+    expect(() => parseConfig({ provider: "anthropic" })).toThrow(/provider/)
+  })
+
+  test("parses openai config options", () => {
+    const config = parseConfig({
+      openaiBaseUrl: "https://my-proxy.example.com/v1",
+      openaiModel: "gpt-4o",
+      openaiApiKey: "sk-custom",
+    })
+    expect(config.openaiBaseUrl).toBe("https://my-proxy.example.com/v1")
+    expect(config.openaiModel).toBe("gpt-4o")
+    expect(config.openaiApiKey).toBe("sk-custom")
+  })
+
+  test("defaults openaiBaseUrl when not set", () => {
+    const config = parseConfig({})
+    expect(config.openaiBaseUrl).toBe("https://api.openai.com/v1")
+  })
+
+  test("defaults openaiModel to gpt-4o-mini", () => {
+    const config = parseConfig({})
+    expect(config.openaiModel).toBe("gpt-4o-mini")
+  })
+
+  test("reads openai api key from environment", () => {
+    process.env.OPENAI_API_KEY = "env-openai-key"
+    const config = parseConfig({ provider: "openai-compatible" })
+    expect(config.openaiApiKey).toBe("env-openai-key")
+    delete process.env.OPENAI_API_KEY
   })
 })
