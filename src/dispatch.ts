@@ -55,7 +55,7 @@ export async function reviewAndReply(
 
     if (signal.aborted) return
 
-    if (cacheKey && decision.kind === "allow") {
+    if (cacheKey && decision.kind === "allow" && !decision.reasonCode.startsWith("shadow_")) {
       cache.add(rootSessionID, request.action, request.always)
     }
 
@@ -114,7 +114,7 @@ async function modelDecision(
     if (assessment.kind === "block" || assessment.kind === "ask") {
       context.showToast?.({
         title: "Shadow mode",
-        message: `Shadow mode: would have blocked (${assessment.signal} p=${assessment.probability.toFixed(2)})`,
+        message: `Shadow mode: ${assessment.kind === "block" ? "would have blocked" : "would have denied pending user confirmation"} (${assessment.signal} p=${assessment.probability.toFixed(2)})`,
         variant: "info",
         duration: 5_000,
       })

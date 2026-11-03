@@ -115,6 +115,13 @@ describe("dispatch — shadow mode", () => {
     expect(toasts.some((t) => /shadow mode: would have blocked/i.test(t.message))).toBe(true)
   })
 
+  test("distinguishes the ask tier in the shadow toast", async () => {
+    const { toasts } = await run("shadow", okFetch(systemOneBody({ destructive: { score: 3, confidence: 0.9 } })))
+    const message = toasts.find((t) => /shadow mode/i.test(t.message))?.message ?? ""
+    expect(message).toMatch(/would have denied pending user confirmation/i)
+    expect(message).not.toMatch(/would have blocked/i)
+  })
+
   test("replies once with no toast when all signals are below threshold", async () => {
     const { replies, toasts } = await run("shadow", okFetch(systemOneBody()))
     expect(replies[0]!.reply).toBe("once")
@@ -124,5 +131,40 @@ describe("dispatch — shadow mode", () => {
   test("replies once when the rater fails (shadow never blocks)", async () => {
     const { replies } = await run("shadow", failingFetch())
     expect(replies[0]!.reply).toBe("once")
+  })
+})
+
+describe("dispatch — shadow mode session cache isolation", () => {
+  test("does not reuse a shadow-mode would-deny as a session approval in enforce mode", async () => {
+    const harness = makeHarness()
+    const cache = new SessionApprovalCache()
+    const scoped: PermissionRequest = { ...request, always: ["bash:echo hi > /tmp/x"] }
+    const config = (mode: "shadow" | "enforce") =>
+      parseConfig({ provider: "typesafe", systemOneApiKey: "sk-test", mode })
+    const blockBody = okFetch(systemOneBody({ destructive: { score: 4, confidence: 0.9 } }))
+
+    await reviewAndReply(
+      harness.context,
+      harness.client,
+      config("shadow"),
+      scoped,
+      cache,
+      performance.now(),
+      new AbortController().signal,
+      blockBody,
+    )
+    expect(harness.replies[0]!.reply).toBe("once")
+
+    await reviewAndReply(
+      harness.context,
+      harness.client,
+      config("enforce"),
+      scoped,
+      cache,
+      performance.now(),
+      new AbortController().signal,
+      blockBody,
+    )
+    expect(harness.replies[1]!.reply).toBe("reject")
   })
 })
