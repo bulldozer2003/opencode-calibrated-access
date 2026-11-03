@@ -103,6 +103,45 @@ describe("rateCommand", () => {
     const config = { ...testConfig, systemOneApiKey: undefined }
     expect(rateCommand("ls", [], config)).rejects.toThrow(/System One API key/)
   })
+
+  test("sends request to {systemOneBaseUrl}/systemone endpoint", async () => {
+    let sentUrl = ""
+    const fetch: FetchFn = async (url, _opts) => {
+      sentUrl = url
+      return {
+        ok: true,
+        json: async () => ({
+          model: "jev-1.13.0",
+          answers: {
+            alignment: { type: "score", score: 0, confidence: 1 },
+            impact: { type: "score", score: 0, confidence: 1 },
+          },
+        }),
+      } as any
+    }
+    await rateCommand("npm install", [], testConfig, false, fetch)
+    expect(sentUrl).toBe("https://api.typesafe.ai/v1/systemone")
+  })
+
+  test("strips /systemone suffix and trailing slashes from systemOneBaseUrl", async () => {
+    const customConfig = { ...testConfig, systemOneBaseUrl: "http://localhost:8000/v1/systemone/" }
+    let sentUrl = ""
+    const fetch: FetchFn = async (url, _opts) => {
+      sentUrl = url
+      return {
+        ok: true,
+        json: async () => ({
+          model: "jev-1.13.0",
+          answers: {
+            alignment: { type: "score", score: 0, confidence: 1 },
+            impact: { type: "score", score: 0, confidence: 1 },
+          },
+        }),
+      } as any
+    }
+    await rateCommand("ls", [], customConfig, false, fetch)
+    expect(sentUrl).toBe("http://localhost:8000/v1/systemone")
+  })
 })
 
 describe("rateCommand (openai-compatible provider)", () => {
@@ -224,6 +263,22 @@ describe("rateCommand (openai-compatible provider)", () => {
     expect(sentUrl).not.toContain("//chat")
   })
 
+  test("does not strip /systemone suffix from openai base URL", async () => {
+    const customConfig = { ...openAIConfig, openaiBaseUrl: "https://my-proxy.example.com/v1/systemone" }
+    let sentUrl = ""
+    const fetch: FetchFn = async (url, _opts) => {
+      sentUrl = url
+      return {
+        ok: true,
+        json: async () => ({
+          choices: [{ message: { content: JSON.stringify({ alignment: { score: 0, confidence: 1 }, impact: { score: 0, confidence: 1 } }) } }],
+        }),
+      } as any
+    }
+    await rateCommand("ls", [], customConfig, false, fetch)
+    expect(sentUrl).toBe("https://my-proxy.example.com/v1/systemone/chat/completions")
+  })
+
   test("throws on empty choices array", async () => {
     const fetch: FetchFn = async () => ({
       ok: true,
@@ -248,13 +303,13 @@ describe("rateCommand (openai-compatible provider)", () => {
     expect(rateCommand("ls", [], openAIConfig, false, fetch)).rejects.toThrow(/invalid JSON/)
   })
 
-  test("clamps Infinity and -Infinity scores", async () => {
+  test("clamps out-of-range scores", async () => {
     const result = await rateCommand("echo hi", [], openAIConfig, false, openAIOkFetch(JSON.stringify({
-      alignment: { score: Infinity, confidence: Infinity },
-      impact: { score: -Infinity, confidence: -Infinity },
+      alignment: { score: 99, confidence: 5 },
+      impact: { score: -99, confidence: -5 },
     })))
-    expect(result.alignment).toBe(2)
-    expect(result.impact).toBe(2)
+    expect(result.alignment).toBe(4)
+    expect(result.impact).toBe(0)
     expect(result.confidence).toBe(0)
   })
 
@@ -289,9 +344,22 @@ describe("rateCommand (openai-compatible provider)", () => {
     expect(receivedSignal).toBeInstanceOf(AbortSignal)
   })
 
-  test("handles missing fields in openai response gracefully", async () => {
-    const result = await rateCommand("echo hi", [], openAIConfig, false, openAIOkFetch(JSON.stringify({})))
-    expect(result.alignment).toBe(2)
+  test("throws when openai response is missing score fields", async () => {
+    await expect(rateCommand("echo hi", [], openAIConfig, false, openAIOkFetch(JSON.stringify({})))).rejects.toThrow(/missing required score/)
+  })
+
+  test("throws when openai response has impact score but no alignment score", async () => {
+    await expect(
+      rateCommand("echo hi", [], openAIConfig, false, openAIOkFetch(JSON.stringify({ impact: { score: 1, confidence: 0.9 } }))),
+    ).rejects.toThrow(/missing required score/)
+  })
+
+  test("accepts openai scores with missing confidence (clamps to 0)", async () => {
+    const result = await rateCommand("echo hi", [], openAIConfig, false, openAIOkFetch(JSON.stringify({
+      alignment: { score: 1 },
+      impact: { score: 2 },
+    })))
+    expect(result.alignment).toBe(1)
     expect(result.impact).toBe(2)
     expect(result.confidence).toBe(0)
   })

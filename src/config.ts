@@ -7,6 +7,7 @@ const DEFAULT_SYSTEM_ONE_MODEL = "jev-latest"
 const DEFAULT_CONTEXT_MESSAGE_COUNT = 3
 const DEFAULT_PROVIDER: ProviderType = "typesafe"
 const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
+const DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
 
 export function parseConfig(options: Readonly<Record<string, unknown>>): CalibratedConfig {
   return {
@@ -25,16 +26,16 @@ export function parseConfig(options: Readonly<Record<string, unknown>>): Calibra
       "systemOneBaseUrl",
     ),
     systemOneModel: nonEmptyString(
-      options.systemOneModel ?? options.typesafeModel,
+      options.systemOneModel ?? firstNonBlank(options.typesafeModel),
       DEFAULT_SYSTEM_ONE_MODEL,
       "systemOneModel",
     ),
     systemOneApiKey: stringOption(
-      options.systemOneApiKey ?? options.typesafeApiKey,
+      firstNonBlank(options.systemOneApiKey, options.typesafeApiKey),
       process.env.TYPESAFE_API_KEY,
     ),
     openaiBaseUrl: nonEmptyString(options.openaiBaseUrl, DEFAULT_OPENAI_BASE_URL, "openaiBaseUrl"),
-    openaiModel: nonEmptyString(options.openaiModel, "gpt-4o-mini", "openaiModel"),
+    openaiModel: nonEmptyString(options.openaiModel, DEFAULT_OPENAI_MODEL, "openaiModel"),
     openaiApiKey: stringOption(options.openaiApiKey, process.env.OPENAI_API_KEY),
     sessionApprovals: options.sessionApprovals !== false,
     contextMessageCount: boundedInteger(
@@ -88,6 +89,17 @@ function nonEmptyString(value: unknown, fallback: string, name: string): string 
     throw new Error(`Calibrated Access ${name} must be a non-empty string`)
   }
   return value.trim()
+}
+
+function firstNonBlank(...values: unknown[]): unknown {
+  for (const value of values) {
+    if (typeof value === "string") {
+      if (value.trim().length > 0) return value.trim()
+      continue
+    }
+    if (value !== undefined && value !== null) return value
+  }
+  return undefined
 }
 
 function stringOption(value: unknown, envFallback: string | undefined): string | undefined {

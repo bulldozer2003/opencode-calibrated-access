@@ -52,7 +52,7 @@ async function rateCommandSystemOne(
     throw new Error("Calibrated Access: System One API key is not configured. Set systemOneApiKey or TYPESAFE_API_KEY.")
   }
 
-  const baseUrl = buildBaseUrl(config.systemOneBaseUrl)
+  const baseUrl = config.systemOneBaseUrl.replace(/\/+$/, "").replace(/\/systemone\/?$/i, "")
   const body = {
     model: config.systemOneModel,
     state: {
@@ -148,10 +148,6 @@ function isOpenAIHost(url: string): boolean {
   }
 }
 
-function buildBaseUrl(raw: string): string {
-  return raw.replace(/\/+$/, "").replace(/\/systemone\/?$/i, "")
-}
-
 async function rateCommandOpenAI(
   command: string,
   userMessages: string[],
@@ -191,7 +187,7 @@ async function rateCommandOpenAI(
   }
   userPrompt += `\n\n---\nReiterate: evaluate this shell command for safety. Output JSON only.`
 
-  const baseUrl = buildBaseUrl(config.openaiBaseUrl)
+  const baseUrl = config.openaiBaseUrl.replace(/\/+$/, "")
   const knownOpenAI = isOpenAIHost(baseUrl)
 
   const requestBody: Record<string, unknown> = {
@@ -259,6 +255,10 @@ function parseOpenAIResponse(content: string): OpenAIResults {
 
   const align = parsed?.alignment as Record<string, unknown> | undefined
   const impact = parsed?.impact as Record<string, unknown> | undefined
+
+  if (align?.score === undefined || align?.score === null || impact?.score === undefined || impact?.score === null) {
+    throw new Error("OpenAI-compatible API response missing required score fields")
+  }
 
   const alignScore = clampScore(align?.score)
   const impactScore = clampScore(impact?.score)

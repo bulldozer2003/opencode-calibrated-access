@@ -1,6 +1,6 @@
 # opencode-calibrated-access
 
-OpenCode plugin that uses [TypeSafe AI](https://docs.typesafe.ai) to rate command safety via an alignment/impact risk matrix, with per-tool thresholds and auto-alternatives on rejection.
+OpenCode plugin that rates command safety via an alignment/impact risk matrix, with per-tool thresholds and auto-alternatives on rejection. Scoring is model-driven: the default backend is [TypeSafe AI](https://docs.typesafe.ai) System One (Jev and friends), with an OpenAI-compatible chat fallback for general LLMs.
 
 ## Installation
 
@@ -23,7 +23,7 @@ Then add it to your `opencode.jsonc`:
     [
       "opencode-calibrated-access",
       {
-        "typesafeApiKey": "apikey_...your-key-here...",
+        "systemOneApiKey": "apikey_...your-key-here...",
         "riskThresholdBash": 0.4,
         "riskThresholdDirectory": 0.3
       }
@@ -32,12 +32,13 @@ Then add it to your `opencode.jsonc`:
 }
 ```
 
+> **OpenAI fallback is a stopgap, not a Jev replacement.** Setting `"provider": "openai-compatible"` uses a plain chat-completions LLM (`openaiApiKey` / `openaiModel` / `openaiBaseUrl`) that parses scores out of free-form JSON. It is **not** a Jev-aligned scorer — expect less calibrated scores and a much higher chance of misrating a command. Only use it when no System One model is available.
+
 **Important:** OpenCode defaults `bash` permission to `"allow"`, meaning the agent can run any shell command without asking. The plugin only intercepts permission requests — if bash is `"allow"`, no request is created and the plugin never runs. You **must** set `"bash": "ask"` (or `"*": "ask"`) in your `permission` config for the plugin to have any effect.
-```
 
-The API key lives directly in the plugin options. A `TYPESAFE_API_KEY` environment variable is also accepted as a fallback, but the plugin config is the intended path.
+The System One API key lives directly in the plugin options. A `TYPESAFE_API_KEY` environment variable is also accepted as a fallback, but the plugin config is the intended path.
 
-**You need a [TypeSafe AI](https://docs.typesafe.ai) account** to get an API key.
+**You need a [TypeSafe AI](https://docs.typesafe.ai) account** (or another System One-compatible endpoint) to use the default `"typesafe"` provider. For the `"openai-compatible"` provider, use any compatible chat API / `OPENAI_API_KEY`.
 
 ## How It Works
 
@@ -47,7 +48,7 @@ Every permission request goes through three gates:
 
 **2. Session approval cache** — if the user previously approved an exact action+pattern combination in this session, it's reused without re-review.
 
-**3. TypeSafe AI model** — for everything else, the model judges the request on two dimensions:
+**3. Model review** — for everything else, a model judges the request on two dimensions. Set `provider` to `"typesafe"` (default; Jev-aligned System One models using the `/systemone` protocol) or `"openai-compatible"` (a chat-completions fallback for general LLMs — see the caveat above; scores are less calibrated):
 
 | Dimension | Scale | What it measures |
 |-----------|-------|------------------|
@@ -60,10 +61,15 @@ Risk is computed as `(alignment / 4) × (impact / 4)`.
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `typesafeApiKey` | env `TYPESAFE_API_KEY` | API key for TypeSafe. **Set this in plugin options.** |
+| `provider` | `"typesafe"` | Scoring backend: `"typesafe"` (System One) or `"openai-compatible"` (chat fallback). |
+| `systemOneApiKey` | env `TYPESAFE_API_KEY` | API key for System One (TypeSafe, OpenRouter, local Kev/SemIf, etc.). **Set this in plugin options.** Legacy `typesafeApiKey` also works. |
+| `systemOneModel` | `"jev-latest"` | System One model name. Legacy `typesafeModel` also works. |
+| `systemOneBaseUrl` | `"https://api.typesafe.ai/v1"` | System One base URL; `/systemone` is appended automatically. |
+| `openaiApiKey` | env `OPENAI_API_KEY` | API key for the `openai-compatible` provider. |
+| `openaiModel` | `"gpt-4o-mini"` | Chat model for the `openai-compatible` provider. |
+| `openaiBaseUrl` | `"https://api.openai.com/v1"` | Base URL for the `openai-compatible` provider; `/chat/completions` is appended. |
 | `riskThresholdBash` | `0.4` | Max risk (0–1) before bash commands are denied. |
 | `riskThresholdDirectory` | `0.3` | Max risk before `external_directory` requests are denied. |
-| `typesafeModel` | `"jev-latest"` | TypeSafe model name. |
 | `sessionApprovals` | `true` | Whether to cache approved narrow patterns per session. |
 | `contextMessageCount` | `3` | Recent user messages sent as `userContext` to the model. |
 | `diagnosticsPath` | none | Optional path for JSONL decision log. |
@@ -89,7 +95,7 @@ src/
   config.ts      — Parse plugin options with defaults
   types.ts       — Shared TypeScript interfaces
   dispatch.ts    — reviewAndReply() orchestrates all three gates
-  risk-rater.ts  — HTTP call to TypeSafe System One API
+  risk-rater.ts  — HTTP call to System One or OpenAI-compatible API
   matrix.ts      — computeRisk() + assessThreshold()
   policy.ts      — applyDeterministicPolicy() for hard rules
   cache.ts       — SessionApprovalCache for repeated approvals
@@ -101,7 +107,7 @@ src/
 ## Testing
 
 ```bash
-bun test              # 94 tests (63 unit + 31 integration)
+bun test              # 128 tests (97 unit + 31 integration)
 ```
 
 Integration tests hit the real TypeSafe API using the configured key. They are skipped if no key is available.
