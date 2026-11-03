@@ -6,8 +6,9 @@ describe("parseConfig", () => {
     const saved = process.env.TYPESAFE_API_KEY
     delete process.env.TYPESAFE_API_KEY
     const config = parseConfig({})
-    expect(config.riskThresholdBash).toBe(0.4)
-    expect(config.riskThresholdDirectory).toBe(0.3)
+    expect(config.mode).toBe("enforce")
+    expect(config.signalThresholds.destructive).toEqual({ block: 0.85, ask: 0.6 })
+    expect(config.signalThresholds.secret_exposure).toEqual({ block: 0.7, ask: 0.5 })
     expect(config.provider).toBe("typesafe")
     expect(config.systemOneBaseUrl).toBe("https://api.typesafe.ai/v1")
     expect(config.systemOneModel).toBe("jev-latest")
@@ -18,17 +19,45 @@ describe("parseConfig", () => {
     process.env.TYPESAFE_API_KEY = saved
   })
 
-  test("accepts custom risk thresholds", () => {
-    const config = parseConfig({ riskThresholdBash: 0.6, riskThresholdDirectory: 0.2 })
-    expect(config.riskThresholdBash).toBe(0.6)
-    expect(config.riskThresholdDirectory).toBe(0.2)
+  test("accepts shadow mode", () => {
+    expect(parseConfig({ mode: "shadow" }).mode).toBe("shadow")
+    expect(parseConfig({ mode: "enforce" }).mode).toBe("enforce")
   })
 
-  test("rejects out-of-range risk thresholds", () => {
-    expect(() => parseConfig({ riskThresholdBash: -0.1 })).toThrow(/riskThresholdBash/)
-    expect(() => parseConfig({ riskThresholdBash: 1.1 })).toThrow(/riskThresholdBash/)
-    expect(() => parseConfig({ riskThresholdDirectory: -0.1 })).toThrow(/riskThresholdDirectory/)
-    expect(() => parseConfig({ riskThresholdDirectory: 1.1 })).toThrow(/riskThresholdDirectory/)
+  test("rejects invalid mode", () => {
+    expect(() => parseConfig({ mode: "monitor" })).toThrow(/mode/)
+  })
+
+  test("merges custom signal thresholds over defaults", () => {
+    const config = parseConfig({ signalThresholds: { destructive: { block: 0.95 } } })
+    expect(config.signalThresholds.destructive).toEqual({ block: 0.95, ask: 0.6 })
+    expect(config.signalThresholds.severity).toEqual({ block: 0.85, ask: 0.6 })
+  })
+
+  test("rejects unknown signal threshold keys", () => {
+    expect(() => parseConfig({ signalThresholds: { destructivo: { block: 0.5 } } })).toThrow(
+      /signalThresholds\.destructivo is not a known signal/,
+    )
+  })
+
+  test("rejects user_requested in signal thresholds", () => {
+    expect(() => parseConfig({ signalThresholds: { user_requested: { block: 0.5 } } })).toThrow(
+      /not a known signal/,
+    )
+  })
+
+  test("rejects signal thresholds where ask exceeds block", () => {
+    expect(() => parseConfig({ signalThresholds: { destructive: { block: 0.5, ask: 0.7 } } })).toThrow(/destructive/)
+  })
+
+  test("rejects out-of-range signal thresholds", () => {
+    expect(() => parseConfig({ signalThresholds: { destructive: { block: 1.5 } } })).toThrow(/destructive/)
+    expect(() => parseConfig({ signalThresholds: { destructive: { ask: -0.1 } } })).toThrow(/destructive/)
+  })
+
+  test("signal thresholds merge ask only", () => {
+    const config = parseConfig({ signalThresholds: { severity: { ask: 0.4 } } })
+    expect(config.signalThresholds.severity).toEqual({ block: 0.85, ask: 0.4 })
   })
 
   test("accepts custom System One model via systemOneModel", () => {
