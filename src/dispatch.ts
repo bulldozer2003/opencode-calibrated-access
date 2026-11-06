@@ -118,12 +118,30 @@ async function modelDecision(
         variant: "info",
         duration: 5_000,
       })
+    } else if (assessment.kind === "unjudged") {
+      context.showToast?.({
+        title: "Shadow mode",
+        message: "Shadow mode: would have blocked (no confident signals)",
+        variant: "info",
+        duration: 5_000,
+      })
     }
     return {
       decision: {
         kind: "allow",
         reasonCode: assessment.kind === "allow" ? assessment.reasonCode : `shadow_${assessment.kind}`,
         reason: assessment.reason,
+      },
+      signals: raw,
+    }
+  }
+
+  if (assessment.kind === "unjudged") {
+    return {
+      decision: {
+        kind: "deny",
+        reasonCode: "no_confident_signals",
+        reason: "The safety rater returned no confident assessment; blocked by default.",
       },
       signals: raw,
     }

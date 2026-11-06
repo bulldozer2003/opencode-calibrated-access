@@ -72,6 +72,7 @@ Per-signal thresholds decide the outcome:
 | `scope_creep` | 0.8 | 0.6 |
 | `severity` | 0.85 | 0.6 |
 
+- No risk signal confident at all (every confidence below `0.5`) → deny with reasonCode `no_confident_signals`; the `user_requested` override cannot rescue it.
 - Any risk signal at or above its **block** threshold → deny.
 - Otherwise any risk signal at or above its **ask** threshold → deny, telling the agent to confirm with the user before retrying.
 - `user_requested` is a protective override: when its probability is at least `0.8` (with confidence `≥ 0.5`) and the only offender is in the **ask** tier, the request is allowed. It never downgrades a **block**-tier deny.
@@ -119,7 +120,7 @@ Omitted values fall back to the defaults. `user_requested` has no thresholds.
 
 ## How the Confidence Gate Works
 
-Each signal is only considered when its own **confidence ≥ 0.5**. Low-confidence signals are ignored rather than treated as safe or risky. The `user_requested` override additionally requires confidence `≥ 0.5`. Use `"mode": "shadow"` and the diagnostics log to see how each signal behaves before enforcing.
+Each signal is only considered when its own **confidence ≥ 0.5**. Low-confidence signals are ignored rather than treated as safe or risky. The `user_requested` override additionally requires confidence `≥ 0.5`. If **no** risk signal reaches the 0.5 floor, the request cannot be judged: enforce mode denies it with `no_confident_signals` — "blocked by default", mirroring a rater failure — and `user_requested` cannot override it. Shadow mode toasts/logs what enforcement would have done. Use `"mode": "shadow"` and the diagnostics log to see how each signal behaves before enforcing.
 
 ## Example Config
 
@@ -146,7 +147,7 @@ src/
 ## Testing
 
 ```bash
-bun test              # 136 tests (111 unit + 25 integration)
+bun test              # 144 tests (119 unit + 25 integration)
 ```
 
 Integration tests hit the real TypeSafe API using the configured key. They are skipped if no key is available.

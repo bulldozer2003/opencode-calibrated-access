@@ -4,4 +4,4 @@ Do not edit configs when a dedicated tool exists i.e. `npm install`.
 
 All code edits must follow red green TDD.
 
-Project: opencode-calibrated-access — OpenCode plugin that rates tool-call safety via a Jev alignment/impact risk matrix with per-tool thresholds and auto-alternatives on rejection.
+Project: opencode-calibrated-access — OpenCode plugin that rates tool-call safety via seven calibrated safety signals with per-signal block/ask thresholds, a shadow mode for threshold calibration, and auto-alternatives on rejection.

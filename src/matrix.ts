@@ -18,6 +18,7 @@ export type SignalAssessment =
   | { kind: "allow"; reasonCode: "user_requested_override"; reason: string }
   | { kind: "ask"; signal: RiskSignalName; probability: number; reason: string }
   | { kind: "block"; signal: RiskSignalName; probability: number; reason: string }
+  | { kind: "unjudged"; reason: string }
 
 const RISK_SIGNALS = SIGNAL_NAMES.filter((name): name is RiskSignalName => name !== "user_requested")
 
@@ -41,6 +42,13 @@ export function assessSignals(
     signal,
     probability: scores.signals[signal].probability,
   }))
+
+  if (considered.length === 0) {
+    return {
+      kind: "unjudged",
+      reason: "No risk signal reached the 0.5 confidence floor; the request could not be judged.",
+    }
+  }
 
   const blockers = considered.filter((entry) => entry.probability >= thresholds[entry.signal].block)
   const blocker = highest(blockers)

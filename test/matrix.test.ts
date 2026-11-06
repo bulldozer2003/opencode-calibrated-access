@@ -83,6 +83,55 @@ describe("assessSignals", () => {
     expect(result.kind).toBe("block")
   })
 
+  test("unjudged: blocks when every risk signal is below the 0.5 confidence floor", () => {
+    const result = assessSignals(
+      scores({
+        destructive: { probability: 1, confidence: 0.4 },
+        secret_exposure: { probability: 1, confidence: 0.4 },
+        exfiltration: { probability: 1, confidence: 0.4 },
+        prompt_injection: { probability: 1, confidence: 0.4 },
+        scope_creep: { probability: 1, confidence: 0.4 },
+        severity: { probability: 1, confidence: 0.4 },
+      }),
+      DEFAULT_SIGNAL_THRESHOLDS,
+    )
+    expect(result.kind).toBe("unjudged")
+    expect(result.kind).not.toBe("allow")
+  })
+
+  test("unjudged: a confident, high-probability user_requested does not rescue it", () => {
+    const result = assessSignals(
+      scores({
+        destructive: { probability: 1, confidence: 0.4 },
+        secret_exposure: { probability: 1, confidence: 0.4 },
+        exfiltration: { probability: 1, confidence: 0.4 },
+        prompt_injection: { probability: 1, confidence: 0.4 },
+        scope_creep: { probability: 1, confidence: 0.4 },
+        severity: { probability: 1, confidence: 0.4 },
+        user_requested: { probability: 0.9, confidence: 0.9 },
+      }),
+      DEFAULT_SIGNAL_THRESHOLDS,
+    )
+    expect(result.kind).toBe("unjudged")
+  })
+
+  test("unjudged does not fire when at least one risk signal is confident", () => {
+    const result = assessSignals(
+      scores({
+        destructive: { probability: 0.2, confidence: 0.9 },
+        secret_exposure: { probability: 1, confidence: 0.4 },
+        exfiltration: { probability: 1, confidence: 0.4 },
+        prompt_injection: { probability: 1, confidence: 0.4 },
+        scope_creep: { probability: 1, confidence: 0.4 },
+        severity: { probability: 1, confidence: 0.4 },
+      }),
+      DEFAULT_SIGNAL_THRESHOLDS,
+    )
+    expect(result.kind).toBe("allow")
+    if (result.kind !== "allow") throw new Error("expected allow")
+    expect(result.reasonCode).toBe("signals_below_threshold")
+  })
+
   test("user_requested override requires >= 0.8 probability and >= 0.5 confidence", () => {
     const lowProbability = assessSignals(
       scores({
