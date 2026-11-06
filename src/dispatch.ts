@@ -4,8 +4,11 @@ import { assessSignals } from "./matrix.ts"
 import { rateCommand, type FetchFn } from "./risk-rater.ts"
 import { SessionApprovalCache } from "./cache.ts"
 import { buildContinuationMessage } from "./resume.ts"
-import { writeDiagnostic, describeError } from "./diagnostics.ts"
+import { writeDiagnostic } from "./diagnostics.ts"
 import { collectUserMessages, isPluginContinuation } from "./context.ts"
+import { alternativesSection } from "./alternatives.ts"
+
+const ALWAYS_ENFORCED_POLICY_CODES = new Set(["catastrophic_delete", "explicit_user_prohibition"])
 
 export async function reviewAndReply(
   context: RuntimeContext,
@@ -33,18 +36,32 @@ export async function reviewAndReply(
     }
 
     const policyDecision = applyDeterministicPolicy(reviewInput)
+    const shadowPolicy =
+      policyDecision && config.mode === "shadow" && !ALWAYS_ENFORCED_POLICY_CODES.has(policyDecision.reasonCode)
+        ? { kind: "allow" as const, reasonCode: `shadow_${policyDecision.reasonCode}`, reason: policyDecision.reason }
+        : undefined
+    const effectivePolicy = shadowPolicy ?? policyDecision
     const cacheKey = reusableCacheKey(request, rootSessionID)
 
-    const cached = !policyDecision && cacheKey && cache.has(rootSessionID, request.action, request.always)
+    const cached = config.sessionApprovals && !effectivePolicy && cacheKey && cache.has(rootSessionID, request.action, request.always)
       ? { kind: "allow" as const, reasonCode: "session_approval_reused" as const, reason: "Reuses an approved narrow pattern from this session." }
       : undefined
+
+    if (shadowPolicy) {
+      context.showToast?.({
+        title: "Shadow mode",
+        message: `Shadow mode: would have blocked (${policyDecision!.reasonCode})`,
+        variant: "info",
+        duration: 5_000,
+      })
+    }
 
     const isRetry = detectRetryAfterDenial(rawMessages)
 
     let decision: Decision
     let signals: SignalScores | undefined
-    if (policyDecision) {
-      decision = policyDecision
+    if (effectivePolicy) {
+      decision = effectivePolicy
     } else if (cached) {
       decision = cached
     } else {
@@ -55,11 +72,11 @@ export async function reviewAndReply(
 
     if (signal.aborted) return
 
-    if (cacheKey && decision.kind === "allow" && !decision.reasonCode.startsWith("shadow_")) {
+    if (config.sessionApprovals && cacheKey && decision.kind === "allow" && !decision.reasonCode.startsWith("shadow_")) {
       cache.add(rootSessionID, request.action, request.always)
     }
 
-    writeDiag(config, request, startedAt, decision, sourceLabel(policyDecision, cached, config), signals)
+    writeDiag(config, request, startedAt, decision, sourceLabel(effectivePolicy, cached, config), signals)
 
     if (decision.kind === "allow") {
       await client.reply({ sessionID: request.sessionID, requestID: request.id, reply: "once", protocol: request.protocol })
@@ -68,11 +85,11 @@ export async function reviewAndReply(
         sessionID: request.sessionID,
         requestID: request.id,
         reply: "reject",
-        message: `Calibrated Access blocked this action: ${decision.reason}`,
+        message: `Calibrated Access blocked this action: ${decision.reason}${alternativesSection(decision.alternatives)}`,
         protocol: request.protocol,
       })
       context.showToast?.({ title: "Blocked", message: decision.reason, variant: "warning", duration: 4_000 })
-      context.resumeAfterDenial?.(request.sessionID, buildContinuationMessage(decision.reason, request.resources))
+      context.resumeAfterDenial?.(request.sessionID, buildContinuationMessage(decision.reason, request.resources, decision.alternatives))
     }
   } catch (error) {
     if (signal.aborted) return

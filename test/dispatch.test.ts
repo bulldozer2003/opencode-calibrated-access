@@ -14,11 +14,13 @@ interface Harness {
   client: ReviewerClient
   replies: ReplyInput[]
   toasts: Array<{ title?: string; message: string; variant?: string }>
+  resumes: Array<{ sessionID: string; reason: string }>
 }
 
-function makeHarness(): Harness {
+function makeHarness(messages: unknown[] = []): Harness {
   const replies: ReplyInput[] = []
   const toasts: Harness["toasts"] = []
+  const resumes: Harness["resumes"] = []
   const context: RuntimeContext = {
     options: {},
     client: {},
@@ -27,11 +29,12 @@ function makeHarness(): Harness {
       session: {
         root: () => "root1",
         get: () => undefined,
-        message: { list: () => [], get: () => undefined, sync: async () => {} },
+        message: { list: () => messages, get: () => undefined, sync: async () => {} },
         permission: { list: () => undefined, sync: async () => {} },
       },
     },
     showToast: (input) => toasts.push(input),
+    resumeAfterDenial: (sessionID, reason) => resumes.push({ sessionID, reason }),
   }
   const client: ReviewerClient = {
     async reply(input) {
@@ -39,7 +42,7 @@ function makeHarness(): Harness {
       return "replied"
     },
   }
-  return { context, client, replies, toasts }
+  return { context, client, replies, toasts, resumes }
 }
 
 function systemOneBody(overrides: Partial<Record<SignalName, { score?: number; confidence?: number }>> = {}) {
@@ -89,6 +92,27 @@ async function run(mode: "shadow" | "enforce", fetchFn: FetchFn): Promise<Harnes
     harness.client,
     config,
     request,
+    new SessionApprovalCache(),
+    performance.now(),
+    new AbortController().signal,
+    fetchFn,
+  )
+  return harness
+}
+
+async function runCommand(
+  mode: "shadow" | "enforce",
+  command: string,
+  fetchFn: FetchFn,
+  messages: unknown[] = [],
+): Promise<Harness> {
+  const harness = makeHarness(messages)
+  const config = parseConfig({ provider: "typesafe", systemOneApiKey: "sk-test", mode })
+  await reviewAndReply(
+    harness.context,
+    harness.client,
+    config,
+    { ...request, resources: [command] },
     new SessionApprovalCache(),
     performance.now(),
     new AbortController().signal,
@@ -248,5 +272,123 @@ describe("dispatch — shadow mode session cache isolation", () => {
       body,
     )
     expect(harness.replies[1]!.reply).toBe("reject")
+  })
+})
+
+describe("dispatch — deterministic secret exposure", () => {
+  test("enforce mode rejects with alternatives in the message and continuation", async () => {
+    const { replies, resumes } = await runCommand("enforce", "echo $API_KEY", okFetch(systemOneBody()))
+    expect(replies[0]!.reply).toBe("reject")
+    expect(replies[0]!.message).toContain("API_KEY")
+    expect(replies[0]!.message).toContain("Safer alternatives:")
+    expect(replies[0]!.message).toContain("- Use gh auth login / git credential fill instead of inlining tokens.")
+    expect(resumes[0]!.reason).toContain("Safer alternatives:")
+  })
+
+  test("enforce mode still allows routine commands via policy", async () => {
+    const { replies } = await runCommand("enforce", "git status", okFetch(systemOneBody()))
+    expect(replies[0]!.reply).toBe("once")
+  })
+})
+
+describe("dispatch — shadow mode deterministic policy", () => {
+  test("allows secret exposure through but toasts what would have been blocked", async () => {
+    const { replies, toasts } = await runCommand("shadow", "echo $API_KEY", okFetch(systemOneBody()))
+    expect(replies[0]!.reply).toBe("once")
+    expect(replies[0]!.message).toBeUndefined()
+    expect(toasts.some((t) => /shadow mode/i.test(t.message) && /secret_exposure/.test(t.message))).toBe(true)
+  })
+
+  test("allows secret-file reads through but toasts what would have been blocked", async () => {
+    const { replies, toasts } = await runCommand("shadow", "cat .env", okFetch(systemOneBody()))
+    expect(replies[0]!.reply).toBe("once")
+    expect(replies[0]!.message).toBeUndefined()
+    expect(toasts.some((t) => /shadow mode/i.test(t.message) && /secret_exposure/.test(t.message))).toBe(true)
+  })
+
+  test("still enforces catastrophic deletes in shadow mode", async () => {
+    const { replies } = await runCommand("shadow", "rm -rf /", okFetch(systemOneBody()))
+    expect(replies[0]!.reply).toBe("reject")
+    expect(replies[0]!.message).toContain("catastrophic")
+  })
+
+  test("still enforces explicit user prohibition in shadow mode", async () => {
+    const messages = [{ type: "user", text: "Run it, but I explicitly prohibit `touch /tmp/example`." }]
+    const { replies } = await runCommand("shadow", "touch /tmp/example", okFetch(systemOneBody()), messages)
+    expect(replies[0]!.reply).toBe("reject")
+    expect(replies[0]!.message).toContain("prohibit")
+  })
+})
+
+describe("dispatch — sessionApprovals gating", () => {
+  const scoped = (): PermissionRequest => ({ ...request, always: ["bash:echo hi > /tmp/x"] })
+
+  test("does not consult the session cache when sessionApprovals is false", async () => {
+    const harness = makeHarness()
+    const cache = new SessionApprovalCache()
+    const req = scoped()
+    cache.add("root1", req.action, req.always)
+    const config = parseConfig({ provider: "typesafe", systemOneApiKey: "sk-test", mode: "enforce", sessionApprovals: false })
+    await reviewAndReply(
+      harness.context,
+      harness.client,
+      config,
+      req,
+      cache,
+      performance.now(),
+      new AbortController().signal,
+      okFetch(systemOneBody({ destructive: { score: 4, confidence: 0.9 } })),
+    )
+    expect(harness.replies[0]!.reply).toBe("reject")
+  })
+
+  test("does not write to the session cache when sessionApprovals is false", async () => {
+    const harness = makeHarness()
+    const cache = new SessionApprovalCache()
+    const req = scoped()
+    const config = parseConfig({ provider: "typesafe", systemOneApiKey: "sk-test", mode: "enforce", sessionApprovals: false })
+    await reviewAndReply(
+      harness.context,
+      harness.client,
+      config,
+      req,
+      cache,
+      performance.now(),
+      new AbortController().signal,
+      okFetch(systemOneBody()),
+    )
+    expect(harness.replies[0]!.reply).toBe("once")
+    expect(cache.has("root1", req.action, req.always)).toBe(false)
+  })
+
+  test("reuses and records approvals when sessionApprovals is true", async () => {
+    const harness = makeHarness()
+    const cache = new SessionApprovalCache()
+    const req = scoped()
+    const config = parseConfig({ provider: "typesafe", systemOneApiKey: "sk-test", mode: "enforce", sessionApprovals: true })
+
+    await reviewAndReply(
+      harness.context,
+      harness.client,
+      config,
+      req,
+      cache,
+      performance.now(),
+      new AbortController().signal,
+      okFetch(systemOneBody()),
+    )
+    expect(cache.has("root1", req.action, req.always)).toBe(true)
+
+    await reviewAndReply(
+      harness.context,
+      harness.client,
+      config,
+      req,
+      cache,
+      performance.now(),
+      new AbortController().signal,
+      failingFetch(),
+    )
+    expect(harness.replies[1]!.reply).toBe("once")
   })
 })

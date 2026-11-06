@@ -32,6 +32,7 @@ export interface Decision {
   kind: "allow" | "deny"
   reasonCode: string
   reason: string
+  alternatives?: string[]
 }
 
 export interface ReviewInput {
@@ -39,7 +40,6 @@ export interface ReviewInput {
     action: string
     resources: string[]
     sessionPatterns: string[]
-    toolInput?: Record<string, unknown>
   }
   context: {
     rootSessionID: string

@@ -1,6 +1,6 @@
 {
   "name": "opencode-calibrated-access",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "OpenCode plugin that rates tool-call safety via seven calibrated safety signals with per-signal thresholds, shadow mode, and auto-alternatives on rejection.",
   "type": "module",
   "main": "./src/index.ts",

@@ -43,7 +43,7 @@ The System One API key lives directly in the plugin options. A `TYPESAFE_API_KEY
 
 Every permission request goes through three gates:
 
-**1. Deterministic policy** — rules with no model involvement. Blocks catastrophic deletes (`rm -rf /`, `rm -rf ~`). Allows known-safe routine commands (`git status`, `npm test`, `cargo build`, `pytest`). Also blocks commands the user explicitly prohibited in their last message.
+**1. Deterministic policy** — rules with no model involvement. Blocks catastrophic deletes (`rm -rf /`, `rm -rf ~`). Blocks commands that would expose secrets (see [Deterministic secret-exposure blocking](#deterministic-secret-exposure-blocking)). Allows known-safe routine commands (`git status`, `npm test`, `cargo build`, `pytest`). Also blocks commands the user explicitly prohibited in their last message.
 
 **2. Session approval cache** — if the user previously approved an exact action+pattern combination in this session, it's reused without re-review.
 
@@ -87,6 +87,39 @@ Per-signal thresholds decide the outcome:
 4. Flip `"mode"` to `"enforce"`.
 
 The default mode is `"enforce"`.
+
+### Deterministic secret-exposure blocking
+
+Before any model call, a set of conservative string rules denies commands that would expose secrets to stdout, arguments, files, or the network. Detection only fires on secret-looking `$VAR` references, inline credentials, and explicit secret-file path arguments (`.env`, `.env.*`, `*.pem`, `*.key`, `id_rsa`/`id_ed25519`/`id_ecdsa`/`id_dsa`, `.netrc`, `.npmrc`, `.pypirc`, `.aws/credentials`, `.docker/config.json`). The words "token" or "key" in prose, flag names, and non-secret contexts (`grep token`, `ssh-keygen`) are left alone.
+
+Blocked examples:
+
+- `echo $API_KEY`, `printf "%s" $TOKEN`, `printenv GITHUB_TOKEN`
+- `env > creds.txt`, `printenv | curl ...`
+- `curl -H "Authorization: Bearer $TOKEN" ...`, `curl "...?token=$ACCESS_KEY"`
+- `git clone https://user:token@host/...`, `git remote add origin https://$GITHUB_TOKEN@host/...`
+- `echo $API_KEY > file`, `echo $API_KEY | base64`
+- Secret-file reads into output: `cat .env`, `cat .env.local`, `head -5 .env`, `grep AWS_SECRET .env`, `less ~/.ssh/id_rsa`, `cat ~/.aws/credentials`, `bat server.pem`
+- Secret files staged into version control: `git add .env`, `git add -f server.pem`, `git add id_rsa`
+
+Allowed (non-exposing) examples:
+
+- Sourcing into the process environment: `. .env && ./your_script.sh`, `source .env && npm run build`
+- Process-substitution consumption: `. .env && curl -s -K <(printf 'header = ["Authorization: Bearer %s"]' "$API_KEY") https://api.example.com/endpoint`
+- Copying/permission changes (no stdout): `cp .env .env.bak`, `chmod 600 ~/.ssh/id_rsa`
+- Reading a non-secret file: `cat src/config.ts`
+- Indiscriminate staging that *might* include a secret: `git add .`, `git add -A` (left to the model-based `secret_exposure` signal)
+
+Each denial carries actionable, secret-free alternatives, for example:
+
+- Use gh auth login / git credential fill instead of inlining tokens.
+- Load the key from a .env file without printing it (e.g. source into the process env, never echo).
+- Pass secrets via stdin redirection (< file) or a netrc/credential helper instead of command-line arguments.
+- To verify a secret exists, check exit status (test -n "$VAR") instead of printing it.
+- Source secret files into a subshell instead of reading them into output (e.g. . .env && cmd).
+- Keep secret files out of version control: add them to .gitignore and load values from a credential store.
+
+In `"shadow"` mode a deterministic secret-exposure deny is logged and allowed through like any other would-be deny. `catastrophic_delete` and `explicit_user_prohibition` denials stay enforced in every mode.
 
 ## Configuration
 
@@ -138,6 +171,7 @@ src/
   signals.ts     — Shared one-line definition per safety signal
   matrix.ts      — assessSignals() + default per-signal thresholds
   policy.ts      — applyDeterministicPolicy() for hard rules
+  alternatives.ts — Secret-free safer alternatives per deny reason code
   cache.ts       — SessionApprovalCache for repeated approvals
   context.ts     — Normalize permission events, collect user messages
   diagnostics.ts — JSONL decision logging
@@ -147,7 +181,7 @@ src/
 ## Testing
 
 ```bash
-bun test              # 144 tests (119 unit + 25 integration)
+bun test              # 201 tests
 ```
 
 Integration tests hit the real TypeSafe API using the configured key. They are skipped if no key is available.

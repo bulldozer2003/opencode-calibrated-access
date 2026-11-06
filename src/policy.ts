@@ -1,6 +1,172 @@
 import type { Decision, ReviewInput } from "./types.ts"
+import { alternativesFor } from "./alternatives.ts"
 
 const SHELL_COMPOSITION = /[;&|<>`\n]|\$\(|<\(|>\(/
+
+const SECRET_NAME_PATTERN = /(?:^|_)(?:SECRET|TOKEN|API_?KEY|PASSWORD|PASSWD|CREDENTIALS?|ACCESS_?KEY|PRIVATE_?KEY|AUTH)(?:_|\b)/i
+const EXACT_SECRET_NAMES = new Set([
+  "API_KEY",
+  "GITHUB_TOKEN",
+  "AWS_SECRET_ACCESS_KEY",
+  "ANTHROPIC_API_KEY",
+  "OPENAI_API_KEY",
+  "TYPESAFE_API_KEY",
+  "TOKEN",
+])
+
+const TRANSMIT_COMMANDS = /\b(?:curl|wget|nc|netcat|ncat|ssh|scp|rsync|telnet)\b/i
+
+const SECRET_FILE_BASENAMES = /^(?:\.env(?:\.[A-Za-z0-9._-]+)?|\.netrc|\.npmrc|\.pypirc|id_rsa|id_ed25519|id_ecdsa|id_dsa)$/i
+const SECRET_FILE_SUFFIX = /\.(?:pem|key)$/i
+const SECRET_FILE_CONFIG_PATHS = /(?:^|\/)(?:\.aws\/credentials|\.docker\/config\.json)$/i
+const READ_UTILITIES = new Set(["cat", "head", "tail", "less", "more", "bat", "grep", "rg", "awk", "sed", "strings"])
+const SOURCED_PREFIX = /^\s*(?:\.|source)\s/
+
+export type SecretExposure = { reasonCode: "secret_exposure"; reason: string }
+
+export function detectSecretExposure(command: string): SecretExposure | null {
+  const effective = withoutProcessSubstitution(command)
+  const secretVars = secretVarNames(effective)
+
+  if (isPrintCommandOfSecret(effective, secretVars)) {
+    return exposure(`env var ${secretVars[0] ?? "unknown"}`, "stdout/arguments")
+  }
+
+  const secretFile = secretFileRead(command)
+  if (secretFile) {
+    return {
+      reasonCode: "secret_exposure",
+      reason: `This command would read ${secretFile} into output, exposing its secrets to the model. Source it into a subshell instead (. .env && cmd).`,
+    }
+  }
+
+  const stagedFile = secretFileStaged(command)
+  if (stagedFile) {
+    return {
+      reasonCode: "secret_exposure",
+      reason: `This would commit a secret file (${stagedFile}) into version control. Add it to .gitignore and use a credential store.`,
+    }
+  }
+
+  const redirected = secretVarRedirected(effective)
+  if (redirected) {
+    return exposure(`env var ${redirected}`, "a file or downstream command")
+  }
+
+  if (isEnvironmentDump(effective)) {
+    return {
+      reasonCode: "secret_exposure",
+      reason:
+        "This command would dump the process environment (which may hold secrets) to a file or network command. Redirect only the specific non-secret values you need.",
+    }
+  }
+
+  const networkSecret = networkCommandWithSecret(effective, secretVars)
+  if (networkSecret) {
+    return exposure(`env var ${networkSecret}`, "a network endpoint")
+  }
+
+  if (isGitUrlWithCredentials(command)) {
+    return {
+      reasonCode: "secret_exposure",
+      reason:
+        "This command would embed credentials in a git remote URL. Use a credential helper or gh auth login instead.",
+    }
+  }
+
+  return null
+}
+
+function exposure(target: string, destination: string): SecretExposure {
+  return {
+    reasonCode: "secret_exposure",
+    reason: `This command would expose a secret (${target}) to ${destination}. Use a credential store or file redirection instead.`,
+  }
+}
+
+function withoutProcessSubstitution(command: string): string {
+  return command.replace(/<\([^()]*\)/g, " ")
+}
+
+function shellTokens(command: string): string[] {
+  return command
+    .split(/\s+/)
+    .map((token) => token.replace(/^['"]+|['"]+$/g, "").replace(/[;|&]+$/, ""))
+    .filter((token) => token.length > 0)
+}
+
+function isSecretFilePath(token: string): boolean {
+  const cleaned = token.replace(/^['"]+|['"]+$/g, "")
+  if (!cleaned || cleaned.startsWith("-")) return false
+  const basename = cleaned.split("/").pop() ?? cleaned
+  return SECRET_FILE_BASENAMES.test(basename) || SECRET_FILE_SUFFIX.test(basename) || SECRET_FILE_CONFIG_PATHS.test(cleaned)
+}
+
+function secretFileRead(command: string): string | undefined {
+  if (SOURCED_PREFIX.test(command)) return undefined
+  const tokens = shellTokens(withoutProcessSubstitution(command))
+  if (!tokens.some((token) => READ_UTILITIES.has(token.toLowerCase()))) return undefined
+  return tokens.find(isSecretFilePath)
+}
+
+function secretFileStaged(command: string): string | undefined {
+  const tokens = shellTokens(withoutProcessSubstitution(command))
+  const git = tokens.findIndex((token) => token.toLowerCase() === "git")
+  if (git === -1 || tokens[git + 1]?.toLowerCase() !== "add") return undefined
+  return tokens.slice(git + 2).find(isSecretFilePath)
+}
+
+function secretVarNames(command: string): string[] {
+  const names = new Set<string>()
+  for (const match of command.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g)) {
+    const name = match[1] ?? match[2]
+    if (name && isSecretName(name)) names.add(name)
+  }
+  return [...names]
+}
+
+function isSecretName(name: string): boolean {
+  return EXACT_SECRET_NAMES.has(name.toUpperCase()) || SECRET_NAME_PATTERN.test(name)
+}
+
+function isPrintCommandOfSecret(command: string, secretVars: string[]): boolean {
+  if (/\b(?:echo|printf)\b/.test(command) && secretVars.length > 0) return true
+  if (!/\bprintenv\b/.test(command)) return false
+  if (secretVars.length > 0) return true
+  const bare = command.match(/\bprintenv\s+(?:-\w+\s+)*([A-Za-z_][A-Za-z0-9_]*)/)
+  return bare?.[1] ? isSecretName(bare[1]) : false
+}
+
+function secretVarRedirected(command: string): string | undefined {
+  for (const match of command.matchAll(/\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?\s*(?:>>?|\|)/g)) {
+    if (match[1] && isSecretName(match[1])) return match[1]
+  }
+  return undefined
+}
+
+function isEnvironmentDump(command: string): boolean {
+  if (!/\b(?:env|printenv|set)\b/.test(command)) return false
+  const redirect = /\b(?:env|printenv|set)\b[^>]*>>?\s*\S/
+  if (redirect.test(command)) return true
+  const pipe = /\b(?:env|printenv|set)\b[^|]*\|\s*([A-Za-z0-9_./-]+)/
+  const piped = command.match(pipe)
+  return piped?.[1] ? TRANSMIT_COMMANDS.test(piped[1]) : false
+}
+
+function networkCommandWithSecret(command: string, secretVars: string[]): string | undefined {
+  if (secretVars.length === 0) return undefined
+  if (!/\b(?:curl|wget)\b/i.test(command)) return undefined
+  if (/authorization\s*:/i.test(command)) return secretVars[0]
+  if (/[?&][A-Za-z0-9_]+=[^&\s]*\$\{?[A-Za-z_]/.test(command)) return secretVars[0]
+  if (/https?:\/\/\$\{?[A-Za-z_][A-Za-z0-9_]*\}?@/i.test(command)) return secretVars[0]
+  return undefined
+}
+
+function isGitUrlWithCredentials(command: string): boolean {
+  if (!/\bgit\b/.test(command)) return false
+  if (/https?:\/\/[^\s"'/@]*:[^\s"'/@]*@/.test(command)) return true
+  return /https?:\/\/\$\{?[A-Za-z_][A-Za-z0-9_]*\}?@/.test(command)
+}
 
 export function applyDeterministicPolicy(input: ReviewInput): Decision | null {
   if (explicitlyProhibited(input)) {
@@ -15,6 +181,11 @@ export function applyDeterministicPolicy(input: ReviewInput): Decision | null {
     return deny("catastrophic_delete", "Recursively deleting the filesystem root or home directory would cause catastrophic data loss.")
   }
 
+  const exposure = detectSecretExposure(command)
+  if (exposure) {
+    return { kind: "deny", reasonCode: exposure.reasonCode, reason: exposure.reason, alternatives: alternativesFor(exposure.reasonCode) }
+  }
+
   if (!SHELL_COMPOSITION.test(command) && isRoutineLocalCommand(command)) {
     return { kind: "allow", reasonCode: "routine_local_command", reason: "Runs a routine local inspection or validation command." }
   }
@@ -23,11 +194,6 @@ export function applyDeterministicPolicy(input: ReviewInput): Decision | null {
 }
 
 function commandText(input: ReviewInput): string {
-  const toolInput = input.request.toolInput
-  if (typeof toolInput === "object" && toolInput !== null && "command" in toolInput) {
-    const command = Reflect.get(toolInput, "command")
-    if (typeof command === "string") return command.trim()
-  }
   return input.request.resources.join(" && ").trim()
 }
 
