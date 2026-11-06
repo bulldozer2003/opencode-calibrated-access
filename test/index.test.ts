@@ -109,6 +109,41 @@ describe("installReviewer", () => {
     expect(replies).toHaveLength(1)
   })
 
+  test("resumes a denied session with the continuation message and alternatives", async () => {
+    const prompts: Array<{ path: { id: string }; body: { parts: Array<{ type: string; text: string }> } }> = []
+    const runtime = makeRuntime({
+      session: {
+        async promptAsync(input: { path: { id: string }; body: { parts: Array<{ type: string; text: string }> } }) {
+          prompts.push(input)
+        },
+      },
+    })
+    installReviewer(runtime.context, { client: { reply: async () => "replied" } })
+    await runtime.emit("permission.v2.asked", askedEvent("req-secret", "echo $API_KEY"))
+    expect(prompts).toHaveLength(1)
+    expect(prompts[0]!.path.id).toBe("sess1")
+    const text = prompts[0]!.body.parts.map((part) => part.text).join("\n")
+    expect(text).toContain("[Calibrated Access]")
+    expect(text).toContain("expose a secret")
+    expect(text).toContain("Safer alternatives:")
+    expect(text).toContain("- Use gh auth login")
+  })
+
+  test("falls back to session.prompt when promptAsync is unavailable", async () => {
+    const prompts: Array<{ path: { id: string }; body: { parts: Array<{ type: string; text: string }> } }> = []
+    const runtime = makeRuntime({
+      session: {
+        async prompt(input: { path: { id: string }; body: { parts: Array<{ type: string; text: string }> } }) {
+          prompts.push(input)
+        },
+      },
+    })
+    installReviewer(runtime.context, { client: { reply: async () => "replied" } })
+    await runtime.emit("permission.v2.asked", askedEvent("req-secret-fallback", "echo $API_KEY"))
+    expect(prompts).toHaveLength(1)
+    expect(prompts[0]!.body.parts[0]!.text).toContain("Safer alternatives:")
+  })
+
   test("falls back to client.permission.reply when no client override is supplied", async () => {
     const replies: ReplyInput[] = []
     const runtime = makeRuntime({

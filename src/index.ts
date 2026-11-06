@@ -15,6 +15,12 @@ export function installReviewer(context: RuntimeContext, overrides: PluginOverri
   const config = parseConfig(context.options)
   const inFlight = new Map<string, AbortController>()
   const cache = new SessionApprovalCache()
+  const runtime: RuntimeContext = {
+    ...context,
+    resumeAfterDenial: context.resumeAfterDenial ?? ((sessionID, message) => {
+      void resumeSession(context.client, sessionID, message)
+    }),
+  }
 
   writeDiag(config, { event: "plugin_started" })
 
@@ -38,7 +44,7 @@ export function installReviewer(context: RuntimeContext, overrides: PluginOverri
 
     try {
       writeDiag(config, { event: "request_received", requestID: asked.id, sessionID: asked.sessionID, action: asked.action })
-      await reviewAndReply(context, overrides.client ?? buildClient(context), config, asked, cache, startedAt, controller.signal)
+      await reviewAndReply(runtime, overrides.client ?? buildClient(context), config, asked, cache, startedAt, controller.signal)
     } catch (error) {
       if (controller.signal.aborted) return
       overrides.onFailure?.(asked, error)
@@ -62,6 +68,16 @@ export function installReviewer(context: RuntimeContext, overrides: PluginOverri
     inFlight.clear()
     cache.clear()
   }
+}
+
+async function resumeSession(client: unknown, sessionID: string, message: string): Promise<void> {
+  const session = (client as Record<string, any> | null | undefined)?.session
+  if (!session) return
+  const prompt = typeof session.promptAsync === "function" ? session.promptAsync : session.prompt
+  if (typeof prompt !== "function") return
+  try {
+    await prompt.call(session, { path: { id: sessionID }, body: { parts: [{ type: "text", text: message }] } })
+  } catch {}
 }
 
 function buildClient(context: RuntimeContext): ReviewerClient {
