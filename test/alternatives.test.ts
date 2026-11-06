@@ -26,6 +26,12 @@ describe("alternativesFor", () => {
     expect(alternativesFor("something_else")).toEqual([])
   })
 
+  test("provides explicit-path staging alternatives for signal_block_user_prohibited", () => {
+    const alternatives = alternativesFor("signal_block_user_prohibited")
+    expect(alternatives).toContain("Stage files individually (git add <path>) after confirming none are secret-bearing.")
+    expect(alternatives).toContain("Run git status first and add only the intended paths.")
+  })
+
   test("returns a fresh copy so callers cannot mutate the registry", () => {
     const first = alternativesFor("secret_exposure")
     first.push("mutated")

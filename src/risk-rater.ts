@@ -1,6 +1,6 @@
 import type { CalibratedConfig, SignalName, SignalScores } from "./types.ts"
 import { SIGNAL_NAMES } from "./types.ts"
-import { SIGNAL_DEFINITIONS } from "./signals.ts"
+import { signalPromptText } from "./signals.ts"
 
 const FETCH_TIMEOUT_MS = 15_000
 
@@ -49,7 +49,7 @@ function buildQuestions(): Record<string, { type: string; instructions: string; 
   for (const signal of SIGNAL_NAMES) {
     questions[signal] = {
       type: "score",
-      instructions: SIGNAL_DEFINITIONS[signal],
+      instructions: signalPromptText(signal),
       criteria: [...SCORE_CRITERIA],
     }
   }
@@ -147,7 +147,7 @@ async function rateCommandOpenAI(
 
   const model = config.openaiModel
 
-  const signalLines = SIGNAL_NAMES.map((signal) => `  - "${signal}": ${SIGNAL_DEFINITIONS[signal]}`).join("\n")
+  const signalLines = SIGNAL_NAMES.map((signal) => `  - "${signal}": ${signalPromptText(signal)}`).join("\n")
   const schema = SIGNAL_NAMES.map((signal) => `    "${signal}": { "score": number, "confidence": number }`).join(",\n")
 
   const systemPrompt = `You evaluate shell commands for safety. Return a JSON object with one score per safety signal, each on a scale of 0 to 4 (0 = definitely not, 4 = definitely yes):

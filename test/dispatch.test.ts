@@ -70,6 +70,7 @@ function unconfidentBody(): FetchFn {
       prompt_injection: { score: 4, confidence: 0.4 },
       scope_creep: { score: 4, confidence: 0.4 },
       user_requested: { score: 4, confidence: 0.4 },
+      user_prohibited: { score: 4, confidence: 0.4 },
       severity: { score: 4, confidence: 0.4 },
     }),
   )
@@ -317,6 +318,27 @@ describe("dispatch — shadow mode deterministic policy", () => {
     const { replies } = await runCommand("shadow", "touch /tmp/example", okFetch(systemOneBody()), messages)
     expect(replies[0]!.reply).toBe("reject")
     expect(replies[0]!.message).toContain("prohibit")
+  })
+})
+
+describe("dispatch — user_prohibited signal", () => {
+  const prohibitedBody = () => okFetch(systemOneBody({ user_prohibited: { score: 3, confidence: 0.9 } }))
+
+  test("enforce mode rejects and offers staging alternatives in the reply and continuation", async () => {
+    const { replies, resumes } = await runCommand("enforce", "git add .", prohibitedBody())
+    expect(replies[0]!.reply).toBe("reject")
+    expect(replies[0]!.message).toContain("user_prohibited")
+    expect(replies[0]!.message).toContain("Safer alternatives:")
+    expect(replies[0]!.message).toContain("- Stage files individually (git add <path>) after confirming none are secret-bearing.")
+    expect(resumes[0]!.reason).toContain("Safer alternatives:")
+    expect(resumes[0]!.reason).toContain("Run git status first and add only the intended paths.")
+  })
+
+  test("shadow mode logs but passes", async () => {
+    const { replies, toasts } = await runCommand("shadow", "git add .", prohibitedBody())
+    expect(replies[0]!.reply).toBe("once")
+    expect(replies[0]!.message).toBeUndefined()
+    expect(toasts.some((t) => /shadow mode: would have blocked/i.test(t.message) && /user_prohibited/.test(t.message))).toBe(true)
   })
 })
 
