@@ -299,6 +299,13 @@ describe("dispatch — shadow mode deterministic policy", () => {
     expect(toasts.some((t) => /shadow mode/i.test(t.message) && /secret_exposure/.test(t.message))).toBe(true)
   })
 
+  test("allows secret-file reads through but toasts what would have been blocked", async () => {
+    const { replies, toasts } = await runCommand("shadow", "cat .env", okFetch(systemOneBody()))
+    expect(replies[0]!.reply).toBe("once")
+    expect(replies[0]!.message).toBeUndefined()
+    expect(toasts.some((t) => /shadow mode/i.test(t.message) && /secret_exposure/.test(t.message))).toBe(true)
+  })
+
   test("still enforces catastrophic deletes in shadow mode", async () => {
     const { replies } = await runCommand("shadow", "rm -rf /", okFetch(systemOneBody()))
     expect(replies[0]!.reply).toBe("reject")

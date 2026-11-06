@@ -3,10 +3,11 @@
 ## 0.4.0 — 2026-11-06
 
 - New deterministic secret-exposure detection (`detectSecretExposure`): blocks commands that would print, redirect, or transmit secrets — `echo $API_KEY`, `printenv GITHUB_TOKEN`, `env > creds.txt`, `printenv | curl`, `curl` auth headers/queries with `$VAR` secrets, git URLs with inline credentials, and secret vars piped or redirected. Detection is conservative: prose words like "token", flag names, and non-secret contexts (`grep token`, `ssh-keygen`, `printenv PATH`, `env | grep TERM`) are not blocked.
+- Extends secret-exposure detection to secret-bearing files: stdout read utilities (`cat`, `head`, `tail`, `less`, `more`, `bat`, `grep`, `rg`, `awk`, `sed`, `strings`) on secret-file paths (`cat .env`, `less ~/.ssh/id_rsa`, `bat server.pem`) and `git add` of an explicit secret-file path (`git add .env`, `git add -f server.pem`) are denied. Sourcing (`. .env && cmd`, `source .env`), process-substitution consumption (`curl -K <(printf ... "$API_KEY")`), `cp`/`chmod`, non-secret file reads, and indiscriminate staging (`git add .`, `git add -A`) stay allowed.
 - Denials now carry actionable, secret-free `alternatives` (`src/alternatives.ts`), surfaced in both the rejection message and the agent continuation message under a `Safer alternatives:` heading.
 - Shadow mode now also applies to deterministic denies: secret-exposure denies are logged and allowed through. `catastrophic_delete` and `explicit_user_prohibition` remain enforced in every mode.
 - Fix: `sessionApprovals: false` now disables the session-approval cache entirely (no reads or writes); previously it had no effect.
-- Docs: README secret-exposure section; 180 tests (155 unit + 25 integration).
+- Docs: README secret-exposure section; 201 tests.
 
 ## 0.3.0 — 2026-11-03
 

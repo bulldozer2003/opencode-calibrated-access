@@ -16,21 +16,44 @@ const EXACT_SECRET_NAMES = new Set([
 
 const TRANSMIT_COMMANDS = /\b(?:curl|wget|nc|netcat|ncat|ssh|scp|rsync|telnet)\b/i
 
+const SECRET_FILE_BASENAMES = /^(?:\.env(?:\.[A-Za-z0-9._-]+)?|\.netrc|\.npmrc|\.pypirc|id_rsa|id_ed25519|id_ecdsa|id_dsa)$/i
+const SECRET_FILE_SUFFIX = /\.(?:pem|key)$/i
+const SECRET_FILE_CONFIG_PATHS = /(?:^|\/)(?:\.aws\/credentials|\.docker\/config\.json)$/i
+const READ_UTILITIES = new Set(["cat", "head", "tail", "less", "more", "bat", "grep", "rg", "awk", "sed", "strings"])
+const SOURCED_PREFIX = /^\s*(?:\.|source)\s/
+
 export type SecretExposure = { reasonCode: "secret_exposure"; reason: string }
 
 export function detectSecretExposure(command: string): SecretExposure | null {
-  const secretVars = secretVarNames(command)
+  const effective = withoutProcessSubstitution(command)
+  const secretVars = secretVarNames(effective)
 
-  if (isPrintCommandOfSecret(command, secretVars)) {
+  if (isPrintCommandOfSecret(effective, secretVars)) {
     return exposure(`env var ${secretVars[0] ?? "unknown"}`, "stdout/arguments")
   }
 
-  const redirected = secretVarRedirected(command)
+  const secretFile = secretFileRead(command)
+  if (secretFile) {
+    return {
+      reasonCode: "secret_exposure",
+      reason: `This command would read ${secretFile} into output, exposing its secrets to the model. Source it into a subshell instead (. .env && cmd).`,
+    }
+  }
+
+  const stagedFile = secretFileStaged(command)
+  if (stagedFile) {
+    return {
+      reasonCode: "secret_exposure",
+      reason: `This would commit a secret file (${stagedFile}) into version control. Add it to .gitignore and use a credential store.`,
+    }
+  }
+
+  const redirected = secretVarRedirected(effective)
   if (redirected) {
     return exposure(`env var ${redirected}`, "a file or downstream command")
   }
 
-  if (isEnvironmentDump(command)) {
+  if (isEnvironmentDump(effective)) {
     return {
       reasonCode: "secret_exposure",
       reason:
@@ -38,7 +61,7 @@ export function detectSecretExposure(command: string): SecretExposure | null {
     }
   }
 
-  const networkSecret = networkCommandWithSecret(command, secretVars)
+  const networkSecret = networkCommandWithSecret(effective, secretVars)
   if (networkSecret) {
     return exposure(`env var ${networkSecret}`, "a network endpoint")
   }
@@ -59,6 +82,38 @@ function exposure(target: string, destination: string): SecretExposure {
     reasonCode: "secret_exposure",
     reason: `This command would expose a secret (${target}) to ${destination}. Use a credential store or file redirection instead.`,
   }
+}
+
+function withoutProcessSubstitution(command: string): string {
+  return command.replace(/<\([^()]*\)/g, " ")
+}
+
+function shellTokens(command: string): string[] {
+  return command
+    .split(/\s+/)
+    .map((token) => token.replace(/^['"]+|['"]+$/g, "").replace(/[;|&]+$/, ""))
+    .filter((token) => token.length > 0)
+}
+
+function isSecretFilePath(token: string): boolean {
+  const cleaned = token.replace(/^['"]+|['"]+$/g, "")
+  if (!cleaned || cleaned.startsWith("-")) return false
+  const basename = cleaned.split("/").pop() ?? cleaned
+  return SECRET_FILE_BASENAMES.test(basename) || SECRET_FILE_SUFFIX.test(basename) || SECRET_FILE_CONFIG_PATHS.test(cleaned)
+}
+
+function secretFileRead(command: string): string | undefined {
+  if (SOURCED_PREFIX.test(command)) return undefined
+  const tokens = shellTokens(withoutProcessSubstitution(command))
+  if (!tokens.some((token) => READ_UTILITIES.has(token.toLowerCase()))) return undefined
+  return tokens.find(isSecretFilePath)
+}
+
+function secretFileStaged(command: string): string | undefined {
+  const tokens = shellTokens(withoutProcessSubstitution(command))
+  const git = tokens.findIndex((token) => token.toLowerCase() === "git")
+  if (git === -1 || tokens[git + 1]?.toLowerCase() !== "add") return undefined
+  return tokens.slice(git + 2).find(isSecretFilePath)
 }
 
 function secretVarNames(command: string): string[] {

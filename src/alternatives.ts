@@ -4,6 +4,8 @@ const ALTERNATIVES: Record<string, string[]> = {
     "Load the key from a .env file without printing it (e.g. source into the process env, never echo).",
     "Pass secrets via stdin redirection (< file) or a netrc/credential helper instead of command-line arguments.",
     'To verify a secret exists, check exit status (test -n "$VAR") instead of printing it.',
+    "Source secret files into a subshell instead of reading them into output (e.g. . .env && cmd).",
+    "Keep secret files out of version control: add them to .gitignore and load values from a credential store.",
   ],
 }
 

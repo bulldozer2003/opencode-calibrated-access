@@ -16,6 +16,12 @@ describe("alternativesFor", () => {
     expect(alternatives).not.toMatch(/\bprintenv\b/)
   })
 
+  test("covers sourcing secret files and keeping them out of version control", () => {
+    const alternatives = alternativesFor("secret_exposure").join(" ").toLowerCase()
+    expect(alternatives).toMatch(/source|subshell/)
+    expect(alternatives).toMatch(/gitignore|credential store/)
+  })
+
   test("returns an empty list for an unknown reason code", () => {
     expect(alternativesFor("something_else")).toEqual([])
   })

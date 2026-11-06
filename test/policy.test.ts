@@ -94,10 +94,70 @@ describe("detectSecretExposure", () => {
     "env",
     "env | grep TERM",
     'test -n "$TOKEN"',
-    "cat .env",
     "git status",
   ]
   for (const command of safeCommands) {
+    test(`allows: ${command}`, () => {
+      expect(detectSecretExposure(command)).toBeNull()
+    })
+  }
+})
+
+describe("detectSecretExposure — secret files", () => {
+  test("blocks cat of .env", () => {
+    expect(detectSecretExposure("cat .env")?.reasonCode).toBe("secret_exposure")
+  })
+
+  test("blocks cat of .env.local", () => {
+    expect(detectSecretExposure("cat .env.local")?.reasonCode).toBe("secret_exposure")
+  })
+
+  test("blocks head of .env", () => {
+    expect(detectSecretExposure("head -5 .env")?.reasonCode).toBe("secret_exposure")
+  })
+
+  test("blocks grep of a secret pattern in .env", () => {
+    expect(detectSecretExposure("grep AWS_SECRET .env")?.reasonCode).toBe("secret_exposure")
+  })
+
+  test("blocks less of an ssh private key", () => {
+    expect(detectSecretExposure("less ~/.ssh/id_rsa")?.reasonCode).toBe("secret_exposure")
+  })
+
+  test("blocks cat of aws credentials", () => {
+    expect(detectSecretExposure("cat ~/.aws/credentials")?.reasonCode).toBe("secret_exposure")
+  })
+
+  test("blocks bat of a pem key", () => {
+    expect(detectSecretExposure("bat server.pem")?.reasonCode).toBe("secret_exposure")
+  })
+
+  test("blocks git add of .env", () => {
+    expect(detectSecretExposure("git add .env")?.reasonCode).toBe("secret_exposure")
+  })
+
+  test("blocks git add -f of a pem key", () => {
+    expect(detectSecretExposure("git add -f server.pem")?.reasonCode).toBe("secret_exposure")
+  })
+
+  test("blocks git add of an ssh private key", () => {
+    expect(detectSecretExposure("git add id_rsa")?.reasonCode).toBe("secret_exposure")
+  })
+})
+
+describe("detectSecretExposure — allowed secret-file uses", () => {
+  const allowed = [
+    ". .env && ./your_script.sh",
+    "source .env && npm run build",
+    `. .env && curl -s -K <(printf 'header = ["Authorization: Bearer %s"]' "$API_KEY") https://api.example.com/endpoint`,
+    "cp .env .env.bak",
+    "chmod 600 ~/.ssh/id_rsa",
+    "cat src/config.ts",
+    "git add .",
+    "git add -A",
+    "grep -r token src/",
+  ]
+  for (const command of allowed) {
     test(`allows: ${command}`, () => {
       expect(detectSecretExposure(command)).toBeNull()
     })
@@ -110,5 +170,14 @@ describe("applyDeterministicPolicy — secret exposure", () => {
     expect(decision?.kind).toBe("deny")
     expect(decision?.reasonCode).toBe("secret_exposure")
     expect(decision?.alternatives?.length).toBeGreaterThanOrEqual(3)
+  })
+
+  test("denies secret-file reads and version-control staging with safer alternatives", () => {
+    for (const command of ["cat .env", "git add .env"]) {
+      const decision = applyDeterministicPolicy(input(command))
+      expect(decision?.kind).toBe("deny")
+      expect(decision?.reasonCode).toBe("secret_exposure")
+      expect(decision?.alternatives?.length).toBeGreaterThanOrEqual(3)
+    }
   })
 })
