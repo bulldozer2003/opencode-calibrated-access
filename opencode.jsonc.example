@@ -18,6 +18,8 @@
         "systemOneModel": "jev-latest",                            // jev-latest, jev-1.14, typesafe/jev-1.14
         "systemOneBaseUrl": "https://api.typesafe.ai/v1",           // see notes below
 
+        // OpenRouter users: do NOT use this provider — set systemOneBaseUrl to
+        // https://openrouter.ai/api/v1 with your sk-or- key above instead.
         // ── Provider 2: OpenAI-compatible chat fallback ──────────────
         // For general LLMs (gpt-4o-mini, etc.) when no System One model
         // is available. NOT a Jev clone — uses chat completions, not the

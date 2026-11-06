@@ -7,7 +7,8 @@
 - Denials now carry actionable, secret-free `alternatives` (`src/alternatives.ts`), surfaced in both the rejection message and the agent continuation message under a `Safer alternatives:` heading.
 - Shadow mode now also applies to deterministic denies: secret-exposure denies are logged and allowed through. `catastrophic_delete` and `explicit_user_prohibition` remain enforced in every mode.
 - Fix: `sessionApprovals: false` now disables the session-approval cache entirely (no reads or writes); previously it had no effect.
-- Docs: README secret-exposure section; 201 tests.
+- Docs: README secret-exposure section; 227 tests.
+- Docs: working GitHub install instructions, new Provider Options section (TypeSafe / existing OpenRouter key / OpenAI-compatible last resort), Verify your setup steps, and Development quickstart with Bun prerequisites.
 
 ## 0.3.0 — 2026-11-03
 

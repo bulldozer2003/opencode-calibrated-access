@@ -5,11 +5,11 @@ OpenCode plugin that rates command safety with seven calibrated safety signals, 
 ## Installation
 
 ```bash
-# From npm (once published)
-npm install opencode-calibrated-access
+# From GitHub (works today)
+npm install git+https://github.com/bulldozer2003/opencode-calibrated-access.git
 
-# Or directly from GitHub
-npm install git+https://github.com/YOUR_USER/opencode-calibrated-access.git
+# From npm (after first publish — remove this note when it lands)
+npm install opencode-calibrated-access
 ```
 
 Then add it to your `opencode.jsonc`:
@@ -37,7 +37,51 @@ Then add it to your `opencode.jsonc`:
 
 The System One API key lives directly in the plugin options. A `TYPESAFE_API_KEY` environment variable is also accepted as a fallback, but the plugin config is the intended path.
 
-**You need a [TypeSafe AI](https://docs.typesafe.ai) account** (or another System One-compatible endpoint) to use the default `"typesafe"` provider. For the `"openai-compatible"` provider, use any compatible chat API / `OPENAI_API_KEY`.
+Scoring needs a System One model. Three ways to get one — see [Provider Options](#provider-options): a [TypeSafe AI](https://docs.typesafe.ai) account, your existing OpenRouter key, or (last resort) any OpenAI-compatible chat model.
+
+## Provider Options
+
+**Have an OpenRouter key? Use Option B — no new account needed.**
+
+### Option A — TypeSafe (default)
+
+Zero config beyond `systemOneApiKey` (`apikey_...`). The default base URL (`https://api.typesafe.ai/v1`) and model (`jev-latest`) are used automatically.
+
+### Option B — existing OpenRouter account
+
+```jsonc
+{
+  "permission": { "bash": "ask" },
+  "plugin": [
+    [
+      "opencode-calibrated-access",
+      {
+        "provider": "typesafe",
+        "systemOneApiKey": "sk-or-...",            // your existing OpenRouter key
+        "systemOneBaseUrl": "https://openrouter.ai/api/v1",
+        "systemOneModel": "typesafe/jev-1.14",
+        "mode": "shadow"
+      }
+    ]
+  ]
+}
+```
+
+This uses the same `/systemone` protocol as TypeSafe, so scores are Jev-aligned — this is **not** the degraded fallback. Local System One-compatible servers (Kev, SemIf, NanoJev, Von) work the same way; see the base-URL table in [`opencode.jsonc.example`](./opencode.jsonc.example).
+
+### Option C — `openai-compatible` fallback (last resort)
+
+Setting `"provider": "openai-compatible"` uses a plain chat-completions LLM (`openaiApiKey` / `openaiModel` / `openaiBaseUrl`) that parses scores out of free-form JSON. It is **not** a Jev-aligned scorer — expect less calibrated scores and a much higher chance of misrating a command. Only use it when no System One model is available.
+
+> **Naming trap:** Despite the name, OpenRouter users should **NOT** choose this provider — OpenRouter speaks the System One protocol natively (Option B). This option is only for plain chat-completions endpoints with no System One model at all.
+
+## Verify your setup
+
+1. Start in `"mode": "shadow"` with a `diagnosticsPath` set (e.g. `~/.opencode/calibrated-access.jsonl`).
+2. Restart opencode, then ask the agent to run any benign command (`ls`).
+3. Working = an info toast appears and a `decision` event lands in the JSONL file.
+4. Nothing happened? `permission.bash` is not `"ask"` — the plugin only sees permission requests (re-read the warning in Installation).
+5. Once satisfied, flip `"mode"` to `"enforce"` (see the Shadow mode onboarding flow in How It Works for the full tuning sequence).
 
 ## How It Works
 
@@ -178,13 +222,18 @@ src/
   resume.ts      — Build continuation messages on denial
 ```
 
-## Testing
+## Development
+
+Prerequisites: [Bun](https://bun.sh) (runs tests + typecheck) and Node ≥ 22 (per `engines`).
 
 ```bash
-bun test              # 201 tests
+bun install           # one-time setup after cloning
+bun test              # 227 tests
+bun test --watch      # iterate
+bun run check         # tsc --noEmit
 ```
 
-Integration tests hit the real TypeSafe API using the configured key. They are skipped if no key is available.
+Integration tests hit the real System One API using the `TYPESAFE_API_KEY` env var and are skipped when it is unset.
 
 ## Publishing
 
