@@ -165,6 +165,16 @@ describe("dispatch — enforce mode", () => {
     expect(replies[0]!.reply).toBe("reject")
   })
 
+  test("fail-closed: resumes with an intact continuation payload when the rater fails", async () => {
+    const { replies, resumes } = await run("enforce", failingFetch())
+    expect(replies[0]!.reply).toBe("reject")
+    expect(resumes).toHaveLength(1)
+    expect(resumes[0]!.sessionID).toBe("sess1")
+    expect(resumes[0]!.reason).toContain("Permission review failed")
+    expect(resumes[0]!.reason).not.toContain("undefined")
+    expect(resumes[0]!.reason).not.toContain("Safer alternatives:")
+  })
+
   test("fail-closed: blocks when no risk signal reaches the confidence floor", async () => {
     const { harness, decision } = await runWithDiagnostics("enforce", unconfidentBody())
     expect(harness.replies[0]!.reply).toBe("reject")
