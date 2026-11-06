@@ -82,6 +82,20 @@ describe("rateCommand", () => {
     expect(body.questions.user_requested.type).toBe("score")
   })
 
+  test("exposes the user_prohibited trigger contexts in the System One question", async () => {
+    let sentBody: unknown = null
+    const fetch: FetchFn = async (_url, opts) => {
+      sentBody = JSON.parse(opts.body as string)
+      return okFetch({ model: "jev-1.13.0", answers: answers() })(_url, opts)
+    }
+    await rateCommand("git add .", ["the user said .env stays out of the repo"], testConfig, false, fetch)
+    const instructions = (sentBody as any).questions.user_prohibited.instructions as string
+    expect(instructions).toContain(SIGNAL_DEFINITIONS.user_prohibited)
+    expect(instructions).toMatch(/staging/i)
+    expect(instructions).toMatch(/secret files/i)
+    expect(instructions).toMatch(/off-limits/i)
+  })
+
   test("sends isRetry=true in state when retrying after denial", async () => {
     let sentBody: unknown = null
     const fetch: FetchFn = async (_url, opts) => {
@@ -189,6 +203,20 @@ describe("rateCommand (openai-compatible provider)", () => {
     const system = body.messages[0].content as string
     for (const signal of SIGNAL_NAMES) expect(system).toContain(`"${signal}"`)
     expect(body.messages[1].content).toContain("npm install")
+  })
+
+  test("exposes the user_prohibited trigger contexts in the OpenAI system prompt", async () => {
+    let sentBody: unknown = null
+    const fetch: FetchFn = async (_url, opts) => {
+      sentBody = JSON.parse(opts.body as string)
+      return { ok: true, json: async () => ({ choices: [{ message: { content: signalJson() } }] }) } as any
+    }
+    await rateCommand("git add .", ["the user said .env stays out of the repo"], openAIConfig, false, fetch)
+    const system = (sentBody as any).messages[0].content as string
+    expect(system).toContain(SIGNAL_DEFINITIONS.user_prohibited)
+    expect(system).toMatch(/staging/i)
+    expect(system).toMatch(/secret files/i)
+    expect(system).toMatch(/off-limits/i)
   })
 
   test("sends isRetry in prompt when retrying after denial", async () => {
@@ -329,6 +357,7 @@ describe("rateCommand (openai-compatible provider)", () => {
       prompt_injection: { score: 2 },
       scope_creep: { score: 2 },
       user_requested: { score: 2 },
+      user_prohibited: { score: 2 },
       severity: { score: 2 },
     })))
     expect(result.signals.destructive.probability).toBeCloseTo(0.5, 5)

@@ -6,7 +6,7 @@ import { SessionApprovalCache } from "./cache.ts"
 import { buildContinuationMessage } from "./resume.ts"
 import { writeDiagnostic } from "./diagnostics.ts"
 import { collectUserMessages, isPluginContinuation } from "./context.ts"
-import { alternativesSection } from "./alternatives.ts"
+import { alternativesFor, alternativesSection } from "./alternatives.ts"
 
 const ALWAYS_ENFORCED_POLICY_CODES = new Set(["catastrophic_delete", "explicit_user_prohibition"])
 
@@ -165,11 +165,13 @@ async function modelDecision(
   }
 
   if (assessment.kind === "block") {
+    const reasonCode = `signal_block_${assessment.signal}`
     return {
       decision: {
         kind: "deny",
-        reasonCode: `signal_block_${assessment.signal}`,
+        reasonCode,
         reason: `Signal "${assessment.signal}" at ${assessment.probability.toFixed(2)} meets the block threshold; blocked.`,
+        alternatives: alternativesFor(reasonCode),
       },
       signals: raw,
     }

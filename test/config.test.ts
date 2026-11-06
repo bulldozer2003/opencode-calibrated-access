@@ -46,6 +46,12 @@ describe("parseConfig", () => {
     )
   })
 
+  test("accepts and defaults user_prohibited thresholds", () => {
+    expect(parseConfig({}).signalThresholds.user_prohibited).toEqual({ block: 0.7, ask: 0.5 })
+    const overridden = parseConfig({ signalThresholds: { user_prohibited: { block: 0.9 } } })
+    expect(overridden.signalThresholds.user_prohibited).toEqual({ block: 0.9, ask: 0.5 })
+  })
+
   test("rejects signal thresholds where ask exceeds block", () => {
     expect(() => parseConfig({ signalThresholds: { destructive: { block: 0.5, ask: 0.7 } } })).toThrow(/destructive/)
   })

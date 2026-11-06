@@ -5,6 +5,7 @@ export const SIGNAL_NAMES = [
   "prompt_injection",
   "scope_creep",
   "user_requested",
+  "user_prohibited",
   "severity",
 ] as const
 

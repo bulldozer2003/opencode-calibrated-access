@@ -10,6 +10,7 @@ function scores(overrides: Partial<Record<SignalName, { probability: number; con
     prompt_injection: { probability: 0, confidence: 1 },
     scope_creep: { probability: 0, confidence: 1 },
     user_requested: { probability: 0, confidence: 1 },
+    user_prohibited: { probability: 0, confidence: 1 },
     severity: { probability: 0, confidence: 1 },
   }
   return { signals: { ...base, ...overrides } }
@@ -91,6 +92,7 @@ describe("assessSignals", () => {
         exfiltration: { probability: 1, confidence: 0.4 },
         prompt_injection: { probability: 1, confidence: 0.4 },
         scope_creep: { probability: 1, confidence: 0.4 },
+        user_prohibited: { probability: 1, confidence: 0.4 },
         severity: { probability: 1, confidence: 0.4 },
       }),
       DEFAULT_SIGNAL_THRESHOLDS,
@@ -107,6 +109,7 @@ describe("assessSignals", () => {
         exfiltration: { probability: 1, confidence: 0.4 },
         prompt_injection: { probability: 1, confidence: 0.4 },
         scope_creep: { probability: 1, confidence: 0.4 },
+        user_prohibited: { probability: 1, confidence: 0.4 },
         severity: { probability: 1, confidence: 0.4 },
         user_requested: { probability: 0.9, confidence: 0.9 },
       }),
@@ -150,5 +153,51 @@ describe("assessSignals", () => {
       DEFAULT_SIGNAL_THRESHOLDS,
     )
     expect(lowConfidence.kind).toBe("ask")
+  })
+
+  test("user_prohibited defaults to block 0.7 / ask 0.5", () => {
+    expect(DEFAULT_SIGNAL_THRESHOLDS.user_prohibited).toEqual({ block: 0.7, ask: 0.5 })
+  })
+
+  test("block-tier: user_prohibited 0.7 blocks", () => {
+    const result = assessSignals(scores({ user_prohibited: { probability: 0.7, confidence: 0.9 } }), DEFAULT_SIGNAL_THRESHOLDS)
+    expect(result.kind).toBe("block")
+    if (result.kind !== "block") throw new Error("expected block")
+    expect(result.signal).toBe("user_prohibited")
+    expect(result.probability).toBe(0.7)
+  })
+
+  test("ask-tier: user_prohibited 0.55 asks", () => {
+    const result = assessSignals(scores({ user_prohibited: { probability: 0.55, confidence: 0.9 } }), DEFAULT_SIGNAL_THRESHOLDS)
+    expect(result.kind).toBe("ask")
+    if (result.kind !== "ask") throw new Error("expected ask")
+    expect(result.signal).toBe("user_prohibited")
+  })
+
+  test("a command both requested and prohibited resolves conservatively — prohibited wins at block threshold", () => {
+    const result = assessSignals(
+      scores({
+        destructive: { probability: 0.65, confidence: 0.9 },
+        user_requested: { probability: 0.95, confidence: 0.9 },
+        user_prohibited: { probability: 0.7, confidence: 0.9 },
+      }),
+      DEFAULT_SIGNAL_THRESHOLDS,
+    )
+    expect(result.kind).toBe("block")
+    if (result.kind !== "block") throw new Error("expected block")
+    expect(result.signal).toBe("user_prohibited")
+  })
+
+  test("user_requested override never downgrades a user_prohibited block", () => {
+    const result = assessSignals(
+      scores({
+        user_requested: { probability: 1, confidence: 1 },
+        user_prohibited: { probability: 0.9, confidence: 1 },
+      }),
+      DEFAULT_SIGNAL_THRESHOLDS,
+    )
+    expect(result.kind).toBe("block")
+    if (result.kind !== "block") throw new Error("expected block")
+    expect(result.signal).toBe("user_prohibited")
   })
 })

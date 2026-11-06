@@ -7,6 +7,10 @@ const ALTERNATIVES: Record<string, string[]> = {
     "Source secret files into a subshell instead of reading them into output (e.g. . .env && cmd).",
     "Keep secret files out of version control: add them to .gitignore and load values from a credential store.",
   ],
+  signal_block_user_prohibited: [
+    "Stage files individually (git add <path>) after confirming none are secret-bearing.",
+    "Run git status first and add only the intended paths.",
+  ],
 }
 
 export function alternativesFor(reasonCode: string): string[] {

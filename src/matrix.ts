@@ -10,6 +10,7 @@ export const DEFAULT_SIGNAL_THRESHOLDS = {
   exfiltration: { block: 0.7, ask: 0.5 },
   prompt_injection: { block: 0.7, ask: 0.5 },
   scope_creep: { block: 0.8, ask: 0.6 },
+  user_prohibited: { block: 0.7, ask: 0.5 },
   severity: { block: 0.85, ask: 0.6 },
 } satisfies Record<RiskSignalName, { block: number; ask: number }>
 
