@@ -1,7 +1,7 @@
-import type { CalibratedConfig, Decision, PermissionRequest, ReviewerClient, RuntimeContext } from "./types.ts"
+import type { CalibratedConfig, Decision, PermissionRequest, ReviewerClient, RuntimeContext, SignalScores } from "./types.ts"
 import { applyDeterministicPolicy } from "./policy.ts"
-import { computeRisk, assessThreshold } from "./matrix.ts"
-import { rateCommand } from "./risk-rater.ts"
+import { assessSignals } from "./matrix.ts"
+import { rateCommand, type FetchFn } from "./risk-rater.ts"
 import { SessionApprovalCache } from "./cache.ts"
 import { buildContinuationMessage } from "./resume.ts"
 import { writeDiagnostic, describeError } from "./diagnostics.ts"
@@ -15,6 +15,7 @@ export async function reviewAndReply(
   cache: SessionApprovalCache,
   startedAt: number,
   signal: AbortSignal,
+  fetchFn?: FetchFn,
 ): Promise<void> {
   try {
     const rootSessionID = await resolveRootSessionID(context, request.sessionID)
@@ -39,15 +40,26 @@ export async function reviewAndReply(
       : undefined
 
     const isRetry = detectRetryAfterDenial(rawMessages)
-    const decision = policyDecision ?? cached ?? await modelDecision(request, messages, config, signal, isRetry)
+
+    let decision: Decision
+    let signals: SignalScores | undefined
+    if (policyDecision) {
+      decision = policyDecision
+    } else if (cached) {
+      decision = cached
+    } else {
+      const model = await modelDecision(context, request, messages, config, signal, isRetry, fetchFn)
+      decision = model.decision
+      signals = model.signals
+    }
 
     if (signal.aborted) return
 
-    if (cacheKey && decision.kind === "allow") {
+    if (cacheKey && decision.kind === "allow" && !decision.reasonCode.startsWith("shadow_")) {
       cache.add(rootSessionID, request.action, request.always)
     }
 
-    writeDiag(config, request, startedAt, decision, sourceLabel(policyDecision, cached, config))
+    writeDiag(config, request, startedAt, decision, sourceLabel(policyDecision, cached, config), signals)
 
     if (decision.kind === "allow") {
       await client.reply({ sessionID: request.sessionID, requestID: request.id, reply: "once", protocol: request.protocol })
@@ -64,7 +76,12 @@ export async function reviewAndReply(
     }
   } catch (error) {
     if (signal.aborted) return
-    writeDiag(config, request, startedAt, { kind: "deny", reasonCode: "review_failed", reason: "Permission review failed." }, "error")
+    if (config.mode === "shadow") {
+      writeDiag(config, request, startedAt, { kind: "allow", reasonCode: "review_failed", reason: "Permission review failed; shadow mode allowed." }, "error", undefined)
+      await client.reply({ sessionID: request.sessionID, requestID: request.id, reply: "once", protocol: request.protocol }).catch(() => {})
+      return
+    }
+    writeDiag(config, request, startedAt, { kind: "deny", reasonCode: "review_failed", reason: "Permission review failed." }, "error", undefined)
     context.showToast?.({ title: "Blocked", message: "Permission review failed; blocked by default.", variant: "error", duration: 4_000 })
     await client.reply({
       sessionID: request.sessionID,
@@ -78,20 +95,84 @@ export async function reviewAndReply(
 }
 
 async function modelDecision(
+  context: RuntimeContext,
   request: PermissionRequest,
   userMessages: string[],
   config: CalibratedConfig,
   signal: AbortSignal,
   isRetry: boolean,
-): Promise<Decision> {
-  const threshold = request.action === "external_directory" ? config.riskThresholdDirectory : config.riskThresholdBash
-  const raw = await rateCommand(request.resources.join(" && "), userMessages, config, isRetry)
-  if (signal.aborted) return { kind: "deny", reasonCode: "aborted", reason: "Review was cancelled." }
-  const risk = computeRisk(raw)
-  if (assessThreshold(risk, threshold)) {
-    return { kind: "allow", reasonCode: "risk_below_threshold", reason: `Risk score ${risk.risk.toFixed(3)} is below threshold ${threshold}.` }
+  fetchFn?: FetchFn,
+): Promise<{ decision: Decision; signals: SignalScores }> {
+  const raw = await rateCommand(request.resources.join(" && "), userMessages, config, isRetry, fetchFn)
+  if (signal.aborted) {
+    return { decision: { kind: "deny", reasonCode: "aborted", reason: "Review was cancelled." }, signals: raw }
   }
-  return { kind: "deny", reasonCode: "risk_above_threshold", reason: `Risk score ${risk.risk.toFixed(3)} exceeds threshold ${threshold}.` }
+
+  const assessment = assessSignals(raw, config.signalThresholds)
+
+  if (config.mode === "shadow") {
+    if (assessment.kind === "block" || assessment.kind === "ask") {
+      context.showToast?.({
+        title: "Shadow mode",
+        message: `Shadow mode: ${assessment.kind === "block" ? "would have blocked" : "would have denied pending user confirmation"} (${assessment.signal} p=${assessment.probability.toFixed(2)})`,
+        variant: "info",
+        duration: 5_000,
+      })
+    } else if (assessment.kind === "unjudged") {
+      context.showToast?.({
+        title: "Shadow mode",
+        message: "Shadow mode: would have blocked (no confident signals)",
+        variant: "info",
+        duration: 5_000,
+      })
+    }
+    return {
+      decision: {
+        kind: "allow",
+        reasonCode: assessment.kind === "allow" ? assessment.reasonCode : `shadow_${assessment.kind}`,
+        reason: assessment.reason,
+      },
+      signals: raw,
+    }
+  }
+
+  if (assessment.kind === "unjudged") {
+    return {
+      decision: {
+        kind: "deny",
+        reasonCode: "no_confident_signals",
+        reason: "The safety rater returned no confident assessment; blocked by default.",
+      },
+      signals: raw,
+    }
+  }
+
+  if (assessment.kind === "block") {
+    return {
+      decision: {
+        kind: "deny",
+        reasonCode: `signal_block_${assessment.signal}`,
+        reason: `Signal "${assessment.signal}" at ${assessment.probability.toFixed(2)} meets the block threshold; blocked.`,
+      },
+      signals: raw,
+    }
+  }
+
+  if (assessment.kind === "ask") {
+    return {
+      decision: {
+        kind: "deny",
+        reasonCode: `signal_ask_${assessment.signal}`,
+        reason: `Signal "${assessment.signal}" at ${assessment.probability.toFixed(2)} meets the ask threshold; confirm with the user before retrying.`,
+      },
+      signals: raw,
+    }
+  }
+
+  return {
+    decision: { kind: "allow", reasonCode: "signals_below_threshold", reason: assessment.reason },
+    signals: raw,
+  }
 }
 
 function reusableCacheKey(request: PermissionRequest, rootSessionID: string): string | undefined {
@@ -105,7 +186,14 @@ function sourceLabel(policy: unknown, cached: unknown, config: CalibratedConfig)
   return config.provider
 }
 
-function writeDiag(config: CalibratedConfig, request: PermissionRequest, startedAt: number, decision: Decision, source: string): void {
+function writeDiag(
+  config: CalibratedConfig,
+  request: PermissionRequest,
+  startedAt: number,
+  decision: Decision,
+  source: string,
+  signals: SignalScores | undefined,
+): void {
   writeDiagnostic(config.diagnosticsPath, {
     timestamp: new Date().toISOString(),
     requestID: request.id,
@@ -114,9 +202,11 @@ function writeDiag(config: CalibratedConfig, request: PermissionRequest, started
     elapsedMs: Math.round(performance.now() - startedAt),
     event: "decision",
     source,
+    mode: config.mode,
     decision: decision.kind,
     reasonCode: decision.reasonCode,
     reason: decision.reason,
+    ...(signals ? { signals: signals.signals } : {}),
   })
 }
 

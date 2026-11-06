@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.0 — 2026-11-03
+
+- **Breaking:** removed `riskThresholdBash` and `riskThresholdDirectory`. The 2-axis alignment/impact risk matrix is replaced by seven calibrated safety signals: `destructive`, `secret_exposure`, `exfiltration`, `prompt_injection`, `scope_creep`, `user_requested`, `severity`.
+- New `signalThresholds` option: per-signal `{ block, ask }` thresholds (0–1), merged over defaults.
+- `user_requested` is a protective override signal — a high-probability explicit user request downgrades an `ask`-tier deny to allow; it never downgrades a `block`-tier deny.
+- Fail-closed: when no risk signal reaches the 0.5 confidence floor, enforce mode denies with `no_confident_signals` (mirrors rater-failure default); `user_requested` cannot override it. Shadow mode logs/toasts it.
+- New `mode` option: `"enforce"` (default) denies on signals; `"shadow"` never blocks, replying `once` while logging what enforcement would have done.
+- Diagnostics `decision` events now include `mode` and the full `signals` probability/confidence map.
+- Both providers (`typesafe`, `openai-compatible`) now evaluate all seven signals in a single pass.
+- 144 tests (119 unit + 25 integration).
+
 ## 0.2.0 — 2026-11-03
 
 - Pluggable model providers: new `provider` option (`"typesafe"` (default) or `"openai-compatible"`).

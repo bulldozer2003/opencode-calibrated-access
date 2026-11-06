@@ -29,8 +29,19 @@
         // "openaiBaseUrl": "https://api.openai.com/v1",
 
         // ── Common options ───────────────────────────────────────────
-        "riskThresholdBash": 0.4,
-        "riskThresholdDirectory": 0.3,
+        "mode": "enforce",                 // "enforce" (default) denies on signals; "shadow" logs only, never blocks
+
+        // Per-signal thresholds (0–1, ask <= block). Omitted signals/fields
+        // fall back to the defaults. `user_requested` has no thresholds.
+        // Defaults: destructive 0.85/0.6, secret_exposure 0.7/0.5,
+        // exfiltration 0.7/0.5, prompt_injection 0.7/0.5,
+        // scope_creep 0.8/0.6, severity 0.85/0.6.
+        //
+        // "signalThresholds": {
+        //   "destructive": { "block": 0.9, "ask": 0.7 },
+        //   "secret_exposure": { "ask": 0.4 }
+        // },
+
         "sessionApprovals": true,
         "contextMessageCount": 3,
         "diagnosticsPath": "/home/you/.opencode/calibrated-access.jsonl"

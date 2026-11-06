@@ -1,24 +1,19 @@
-import type { CalibratedConfig, ProviderType } from "./types.ts"
+import type { CalibratedConfig, ProviderType, RiskSignalName, SafetyMode } from "./types.ts"
+import { SIGNAL_NAMES } from "./types.ts"
+import { DEFAULT_SIGNAL_THRESHOLDS } from "./matrix.ts"
 
-const DEFAULT_RISK_THRESHOLD_BASH = 0.4
-const DEFAULT_RISK_THRESHOLD_DIRECTORY = 0.3
 const DEFAULT_SYSTEM_ONE_BASE_URL = "https://api.typesafe.ai/v1"
 const DEFAULT_SYSTEM_ONE_MODEL = "jev-latest"
 const DEFAULT_CONTEXT_MESSAGE_COUNT = 3
 const DEFAULT_PROVIDER: ProviderType = "typesafe"
+const DEFAULT_MODE: SafetyMode = "enforce"
 const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 const DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
 
 export function parseConfig(options: Readonly<Record<string, unknown>>): CalibratedConfig {
   return {
-    riskThresholdBash: boundedFloat(options.riskThresholdBash, DEFAULT_RISK_THRESHOLD_BASH, 0, 1, "riskThresholdBash"),
-    riskThresholdDirectory: boundedFloat(
-      options.riskThresholdDirectory,
-      DEFAULT_RISK_THRESHOLD_DIRECTORY,
-      0,
-      1,
-      "riskThresholdDirectory",
-    ),
+    mode: parseMode(options.mode),
+    signalThresholds: parseSignalThresholds(options.signalThresholds),
     provider: parseProvider(options.provider),
     systemOneBaseUrl: nonEmptyString(
       options.systemOneBaseUrl,
@@ -55,18 +50,51 @@ function parseProvider(value: unknown): ProviderType {
   throw new Error(`Calibrated Access provider must be "typesafe" or "openai-compatible"`)
 }
 
-function boundedFloat(
-  value: unknown,
-  fallback: number,
-  min: number,
-  max: number,
-  name: string,
-): number {
-  if (value === undefined) return fallback
-  if (typeof value !== "number" || isNaN(value) || value < min || value > max) {
-    throw new Error(`Calibrated Access ${name} must be a number from ${min} to ${max}`)
+function parseMode(value: unknown): SafetyMode {
+  if (value === undefined) return DEFAULT_MODE
+  if (value === "shadow" || value === "enforce") return value
+  throw new Error(`Calibrated Access mode must be "shadow" or "enforce"`)
+}
+
+function parseSignalThresholds(value: unknown): Record<RiskSignalName, { block: number; ask: number }> {
+  if (value === undefined) return cloneDefaultThresholds()
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`Calibrated Access signalThresholds must be an object`)
+  }
+  const result = cloneDefaultThresholds()
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (!isRiskSignalName(key)) {
+      throw new Error(`Calibrated Access signalThresholds.${key} is not a known signal`)
+    }
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      throw new Error(`Calibrated Access signalThresholds.${key} must be an object`)
+    }
+    const record = entry as Record<string, unknown>
+    const block = record.block === undefined ? result[key].block : thresholdNumber(record.block, key, "block")
+    const ask = record.ask === undefined ? result[key].ask : thresholdNumber(record.ask, key, "ask")
+    if (ask > block) {
+      throw new Error(`Calibrated Access signalThresholds.${key} ask must be <= block`)
+    }
+    result[key] = { block, ask }
+  }
+  return result
+}
+
+function isRiskSignalName(key: string): key is RiskSignalName {
+  return key !== "user_requested" && (SIGNAL_NAMES as readonly string[]).includes(key)
+}
+
+function thresholdNumber(value: unknown, signal: string, field: string): number {
+  if (typeof value !== "number" || isNaN(value) || value < 0 || value > 1) {
+    throw new Error(`Calibrated Access signalThresholds.${signal} ${field} must be a number from 0 to 1`)
   }
   return value
+}
+
+function cloneDefaultThresholds(): Record<RiskSignalName, { block: number; ask: number }> {
+  return Object.fromEntries(
+    (Object.keys(DEFAULT_SIGNAL_THRESHOLDS) as RiskSignalName[]).map((key) => [key, { ...DEFAULT_SIGNAL_THRESHOLDS[key] }]),
+  ) as Record<RiskSignalName, { block: number; ask: number }>
 }
 
 function boundedInteger(

@@ -1,7 +1,7 @@
 {
   "name": "opencode-calibrated-access",
-  "version": "0.2.0",
-  "description": "OpenCode plugin that uses TypeSafe AI to rate command safety via a likelihood/impact risk matrix, with per-tool thresholds and auto-alternatives on rejection.",
+  "version": "0.3.0",
+  "description": "OpenCode plugin that rates tool-call safety via seven calibrated safety signals with per-signal thresholds, shadow mode, and auto-alternatives on rejection.",
   "type": "module",
   "main": "./src/index.ts",
   "exports": {

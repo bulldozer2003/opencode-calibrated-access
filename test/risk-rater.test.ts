@@ -1,10 +1,13 @@
 import { describe, expect, test } from "bun:test"
 import { rateCommand } from "../src/risk-rater.ts"
-import type { CalibratedConfig } from "../src/types.ts"
+import { DEFAULT_SIGNAL_THRESHOLDS } from "../src/matrix.ts"
+import { SIGNAL_DEFINITIONS } from "../src/signals.ts"
+import type { CalibratedConfig, SignalName } from "../src/types.ts"
+import { SIGNAL_NAMES } from "../src/types.ts"
 
 const testConfig: CalibratedConfig = {
-  riskThresholdBash: 0.4,
-  riskThresholdDirectory: 0.3,
+  mode: "enforce",
+  signalThresholds: DEFAULT_SIGNAL_THRESHOLDS,
   provider: "typesafe",
   systemOneBaseUrl: "https://api.typesafe.ai/v1",
   systemOneModel: "jev-latest",
@@ -18,6 +21,22 @@ const testConfig: CalibratedConfig = {
 }
 
 type FetchFn = (url: string, init: Record<string, unknown>) => Promise<{ ok: boolean; status: number; json(): Promise<unknown>; text(): Promise<string> }>
+
+function answers(overrides: Partial<Record<SignalName, { score?: number; confidence?: number }>> = {}) {
+  const out: Record<string, { type: string; score: number; confidence: number }> = {}
+  for (const signal of SIGNAL_NAMES) {
+    out[signal] = { type: "score", score: 0, confidence: 1, ...overrides[signal] }
+  }
+  return out
+}
+
+function signalJson(overrides: Partial<Record<SignalName, { score?: number; confidence?: number }>> = {}) {
+  const out: Record<string, { score: number; confidence: number }> = {}
+  for (const signal of SIGNAL_NAMES) {
+    out[signal] = { score: 0, confidence: 1, ...overrides[signal] }
+  }
+  return JSON.stringify(out)
+}
 
 function okFetch(body: Record<string, unknown>): FetchFn {
   return async () => ({
@@ -36,60 +55,38 @@ function errorFetch(status: number, text: string): FetchFn {
 }
 
 describe("rateCommand", () => {
-  test("returns parsed alignment and impact from API response", async () => {
+  test("returns parsed signal probabilities and confidence", async () => {
     const result = await rateCommand("git push --force", ["some context"], testConfig, false, okFetch({
       model: "jev-1.13.0",
-      answers: {
-        alignment: { type: "score", score: 1, legend: ["a", "b", "c", "d", "e"], probabilities: { 0: 0, 1: 0.95, 2: 0.05 }, confidence: 0.9 },
-        impact: { type: "score", score: 2, legend: ["a", "b", "c", "d", "e"], probabilities: { 0: 0, 1: 0, 2: 0.85, 3: 0.15 }, confidence: 0.8 },
-      },
-      usage: { input_tokens: 200, output_tokens: 40 },
+      answers: answers({ destructive: { score: 2, confidence: 0.8 } }),
     }))
-    expect(result.alignment).toBe(1)
-    expect(result.impact).toBe(2)
-    expect(result.confidence).toBeCloseTo(0.8, 1)
+    expect(result.signals.destructive.probability).toBeCloseTo(0.5, 5)
+    expect(result.signals.destructive.confidence).toBeCloseTo(0.8, 1)
+    expect(result.signals.user_requested.probability).toBe(0)
   })
 
-  test("sends correct request body", async () => {
+  test("sends one question per signal in the request body", async () => {
     let sentBody: unknown = null
     const fetch: FetchFn = async (_url, opts) => {
       sentBody = JSON.parse(opts.body as string)
-      return {
-        ok: true,
-        json: async () => ({
-          model: "jev-1.13.0",
-          answers: {
-            alignment: { type: "score", score: 0, legend: ["a", "b", "c", "d", "e"], probabilities: { 0: 1 }, confidence: 1 },
-            impact: { type: "score", score: 0, legend: ["a", "b", "c", "d", "e"], probabilities: { 0: 1 }, confidence: 1 },
-          },
-          usage: { input_tokens: 100, output_tokens: 20 },
-        }),
-      } as any
+      return okFetch({ model: "jev-1.13.0", answers: answers() })(_url, opts)
     }
     await rateCommand("npm install", ["user said install"], testConfig, false, fetch)
-    const body = sentBody as Record<string, unknown>
+    const body = sentBody as Record<string, any>
     expect(body.model).toBe("jev-latest")
-    expect((body as any).state.command).toBe("npm install")
-    expect((body as any).state.isRetry).toBe(false)
-    expect((body as any).questions.alignment.type).toBe("score")
-    expect((body as any).questions.impact.type).toBe("score")
+    expect(body.state.command).toBe("npm install")
+    expect(body.state.isRetry).toBe(false)
+    expect(Object.keys(body.questions).sort()).toEqual([...SIGNAL_NAMES].sort())
+    expect(body.questions.destructive.type).toBe("score")
+    expect(body.questions.destructive.instructions).toBe(SIGNAL_DEFINITIONS.destructive)
+    expect(body.questions.user_requested.type).toBe("score")
   })
 
   test("sends isRetry=true in state when retrying after denial", async () => {
     let sentBody: unknown = null
     const fetch: FetchFn = async (_url, opts) => {
       sentBody = JSON.parse(opts.body as string)
-      return {
-        ok: true,
-        json: async () => ({
-          model: "jev-1.13.0",
-          answers: {
-            alignment: { type: "score", score: 3, legend: ["a", "b", "c", "d", "e"], probabilities: { 3: 1 }, confidence: 1 },
-            impact: { type: "score", score: 3, legend: ["a", "b", "c", "d", "e"], probabilities: { 3: 1 }, confidence: 1 },
-          },
-          usage: { input_tokens: 100, output_tokens: 20 },
-        }),
-      } as any
+      return okFetch({ model: "jev-1.13.0", answers: answers() })(_url, opts)
     }
     await rateCommand("rm file", ["user said do it"], testConfig, true, fetch)
     expect((sentBody as any).state.isRetry).toBe(true)
@@ -106,18 +103,9 @@ describe("rateCommand", () => {
 
   test("sends request to {systemOneBaseUrl}/systemone endpoint", async () => {
     let sentUrl = ""
-    const fetch: FetchFn = async (url, _opts) => {
+    const fetch: FetchFn = async (url, opts) => {
       sentUrl = url
-      return {
-        ok: true,
-        json: async () => ({
-          model: "jev-1.13.0",
-          answers: {
-            alignment: { type: "score", score: 0, confidence: 1 },
-            impact: { type: "score", score: 0, confidence: 1 },
-          },
-        }),
-      } as any
+      return okFetch({ model: "jev-1.13.0", answers: answers() })(url, opts)
     }
     await rateCommand("npm install", [], testConfig, false, fetch)
     expect(sentUrl).toBe("https://api.typesafe.ai/v1/systemone")
@@ -126,18 +114,9 @@ describe("rateCommand", () => {
   test("strips /systemone suffix and trailing slashes from systemOneBaseUrl", async () => {
     const customConfig = { ...testConfig, systemOneBaseUrl: "http://localhost:8000/v1/systemone/" }
     let sentUrl = ""
-    const fetch: FetchFn = async (url, _opts) => {
+    const fetch: FetchFn = async (url, opts) => {
       sentUrl = url
-      return {
-        ok: true,
-        json: async () => ({
-          model: "jev-1.13.0",
-          answers: {
-            alignment: { type: "score", score: 0, confidence: 1 },
-            impact: { type: "score", score: 0, confidence: 1 },
-          },
-        }),
-      } as any
+      return okFetch({ model: "jev-1.13.0", answers: answers() })(url, opts)
     }
     await rateCommand("ls", [], customConfig, false, fetch)
     expect(sentUrl).toBe("http://localhost:8000/v1/systemone")
@@ -147,11 +126,16 @@ describe("rateCommand", () => {
     await expect(
       rateCommand("rm -rf /", [], testConfig, false, okFetch({
         model: "jev-1.13.0",
-        answers: {
-          alignment: { type: "score", score: "3", confidence: 0.9 },
-          impact: { type: "score", score: 2, confidence: 0.8 },
-        },
+        answers: { ...answers(), destructive: { type: "score", score: "3", confidence: 0.9 } },
       })),
+    ).rejects.toThrow(/System One API response missing required score/)
+  })
+
+  test("throws when a signal answer is missing", async () => {
+    const partial = answers()
+    delete partial.secret_exposure
+    await expect(
+      rateCommand("rm -rf /", [], testConfig, false, okFetch({ model: "jev-1.13.0", answers: partial })),
     ).rejects.toThrow(/System One API response missing required score/)
   })
 })
@@ -183,45 +167,35 @@ describe("rateCommand (openai-compatible provider)", () => {
   }
 
   test("routes to openai provider when configured", async () => {
-    const result = await rateCommand("git push --force", ["user said push"], openAIConfig, false, openAIOkFetch(JSON.stringify({
-      alignment: { score: 1, confidence: 0.9 },
-      impact: { score: 2, confidence: 0.8 },
-    })))
-    expect(result.alignment).toBe(1)
-    expect(result.impact).toBe(2)
-    expect(result.confidence).toBeCloseTo(0.8, 1)
+    const result = await rateCommand("git push --force", ["user said push"], openAIConfig, false, openAIOkFetch(
+      signalJson({ destructive: { score: 2, confidence: 0.8 } }),
+    ))
+    expect(result.signals.destructive.probability).toBeCloseTo(0.5, 5)
+    expect(result.signals.destructive.confidence).toBeCloseTo(0.8, 1)
   })
 
-  test("sends correct request body to openai-compatible endpoint", async () => {
+  test("sends all seven signals in the system prompt", async () => {
     let sentUrl = ""
     let sentBody: unknown = null
     const fetch: FetchFn = async (url, opts) => {
       sentUrl = url
       sentBody = JSON.parse(opts.body as string)
-      return {
-        ok: true,
-        json: async () => ({
-          choices: [{ message: { content: JSON.stringify({ alignment: { score: 0, confidence: 1 }, impact: { score: 0, confidence: 1 } }) } }],
-        }),
-      } as any
+      return { ok: true, json: async () => ({ choices: [{ message: { content: signalJson() } }] }) } as any
     }
     await rateCommand("npm install", ["user said install"], openAIConfig, false, fetch)
     expect(sentUrl).toBe("https://api.openai.com/v1/chat/completions")
-    const body = sentBody as Record<string, unknown>
+    const body = sentBody as Record<string, any>
     expect(body.model).toBe("gpt-4o-mini")
-    expect((body.messages as Array<Record<string, unknown>>)[1]!.content).toContain("npm install")
+    const system = body.messages[0].content as string
+    for (const signal of SIGNAL_NAMES) expect(system).toContain(`"${signal}"`)
+    expect(body.messages[1].content).toContain("npm install")
   })
 
   test("sends isRetry in prompt when retrying after denial", async () => {
     let sentBody: unknown = null
     const fetch: FetchFn = async (_url, opts) => {
       sentBody = JSON.parse(opts.body as string)
-      return {
-        ok: true,
-        json: async () => ({
-          choices: [{ message: { content: JSON.stringify({ alignment: { score: 3, confidence: 0.9 }, impact: { score: 3, confidence: 0.9 } }) } }],
-        }),
-      } as any
+      return { ok: true, json: async () => ({ choices: [{ message: { content: signalJson() } }] }) } as any
     }
     await rateCommand("rm file", ["user said do it"], openAIConfig, true, fetch)
     const content = (sentBody as any).messages[1].content as string
@@ -238,26 +212,20 @@ describe("rateCommand (openai-compatible provider)", () => {
   })
 
   test("parses and clamps scores from openai response", async () => {
-    const result = await rateCommand("echo hello", [], openAIConfig, false, openAIOkFetch(JSON.stringify({
-      alignment: { score: 4.5, confidence: 1.2 },
-      impact: { score: -1, confidence: -0.5 },
-    })))
-    expect(result.alignment).toBe(4)
-    expect(result.impact).toBe(0)
-    expect(result.confidence).toBe(0)
+    const result = await rateCommand("echo hello", [], openAIConfig, false, openAIOkFetch(
+      signalJson({ destructive: { score: 4.5, confidence: 1.2 }, exfiltration: { score: -1, confidence: -0.5 } }),
+    ))
+    expect(result.signals.destructive.probability).toBe(1)
+    expect(result.signals.exfiltration.probability).toBe(0)
+    expect(result.signals.exfiltration.confidence).toBe(0)
   })
 
   test("uses custom base URL when set", async () => {
     const customConfig = { ...openAIConfig, openaiBaseUrl: "https://my-proxy.example.com/v1" }
     let sentUrl = ""
-    const fetch: FetchFn = async (url, opts) => {
+    const fetch: FetchFn = async (url, _opts) => {
       sentUrl = url
-      return {
-        ok: true,
-        json: async () => ({
-          choices: [{ message: { content: JSON.stringify({ alignment: { score: 0, confidence: 1 }, impact: { score: 0, confidence: 1 } }) } }],
-        }),
-      } as any
+      return { ok: true, json: async () => ({ choices: [{ message: { content: signalJson() } }] }) } as any
     }
     await rateCommand("ls", [], customConfig, false, fetch)
     expect(sentUrl).toBe("https://my-proxy.example.com/v1/chat/completions")
@@ -266,9 +234,9 @@ describe("rateCommand (openai-compatible provider)", () => {
   test("strips trailing slash from base URL", async () => {
     const customConfig = { ...openAIConfig, openaiBaseUrl: "https://my-proxy.example.com/v1/" }
     let sentUrl = ""
-    const fetch: FetchFn = async (url, opts) => {
+    const fetch: FetchFn = async (url, _opts) => {
       sentUrl = url
-      return { ok: true, json: async () => ({ choices: [{ message: { content: JSON.stringify({ alignment: { score: 0, confidence: 1 }, impact: { score: 0, confidence: 1 } }) } }] }) } as any
+      return { ok: true, json: async () => ({ choices: [{ message: { content: signalJson() } }] }) } as any
     }
     await rateCommand("ls", [], customConfig, false, fetch)
     expect(sentUrl).toBe("https://my-proxy.example.com/v1/chat/completions")
@@ -280,12 +248,7 @@ describe("rateCommand (openai-compatible provider)", () => {
     let sentUrl = ""
     const fetch: FetchFn = async (url, _opts) => {
       sentUrl = url
-      return {
-        ok: true,
-        json: async () => ({
-          choices: [{ message: { content: JSON.stringify({ alignment: { score: 0, confidence: 1 }, impact: { score: 0, confidence: 1 } }) } }],
-        }),
-      } as any
+      return { ok: true, json: async () => ({ choices: [{ message: { content: signalJson() } }] }) } as any
     }
     await rateCommand("ls", [], customConfig, false, fetch)
     expect(sentUrl).toBe("https://my-proxy.example.com/v1/systemone/chat/completions")
@@ -315,16 +278,6 @@ describe("rateCommand (openai-compatible provider)", () => {
     expect(rateCommand("ls", [], openAIConfig, false, fetch)).rejects.toThrow(/invalid JSON/)
   })
 
-  test("clamps out-of-range scores", async () => {
-    const result = await rateCommand("echo hi", [], openAIConfig, false, openAIOkFetch(JSON.stringify({
-      alignment: { score: 99, confidence: 5 },
-      impact: { score: -99, confidence: -5 },
-    })))
-    expect(result.alignment).toBe(4)
-    expect(result.impact).toBe(0)
-    expect(result.confidence).toBe(0)
-  })
-
   test("sanitizes API keys from error messages", async () => {
     const fetch: FetchFn = async () => ({
       ok: false,
@@ -340,7 +293,7 @@ describe("rateCommand (openai-compatible provider)", () => {
     const customConfig = { ...openAIConfig, openaiBaseUrl: "https://ollama.local/v1" }
     const fetch: FetchFn = async (_url, opts) => {
       sentBody = JSON.parse(opts.body as string)
-      return { ok: true, json: async () => ({ choices: [{ message: { content: JSON.stringify({ alignment: { score: 0, confidence: 1 }, impact: { score: 0, confidence: 1 } }) } }] }) } as any
+      return { ok: true, json: async () => ({ choices: [{ message: { content: signalJson() } }] }) } as any
     }
     await rateCommand("ls", [], customConfig, false, fetch)
     expect((sentBody as any).response_format).toBeUndefined()
@@ -350,7 +303,7 @@ describe("rateCommand (openai-compatible provider)", () => {
     let receivedSignal: unknown = null
     const fetch: FetchFn = async (_url, opts) => {
       receivedSignal = opts.signal
-      return { ok: true, json: async () => ({ choices: [{ message: { content: JSON.stringify({ alignment: { score: 0, confidence: 1 }, impact: { score: 0, confidence: 1 } }) } }] }) } as any
+      return { ok: true, json: async () => ({ choices: [{ message: { content: signalJson() } }] }) } as any
     }
     await rateCommand("ls", [], openAIConfig, false, fetch)
     expect(receivedSignal).toBeInstanceOf(AbortSignal)
@@ -360,34 +313,37 @@ describe("rateCommand (openai-compatible provider)", () => {
     await expect(rateCommand("echo hi", [], openAIConfig, false, openAIOkFetch(JSON.stringify({})))).rejects.toThrow(/missing required score/)
   })
 
-  test("throws when openai response has impact score but no alignment score", async () => {
+  test("throws when openai response omits a single signal", async () => {
+    const parsed = JSON.parse(signalJson()) as Record<string, unknown>
+    delete parsed.secret_exposure
     await expect(
-      rateCommand("echo hi", [], openAIConfig, false, openAIOkFetch(JSON.stringify({ impact: { score: 1, confidence: 0.9 } }))),
+      rateCommand("echo hi", [], openAIConfig, false, openAIOkFetch(JSON.stringify(parsed))),
     ).rejects.toThrow(/missing required score/)
   })
 
   test("accepts openai scores with missing confidence (clamps to 0)", async () => {
     const result = await rateCommand("echo hi", [], openAIConfig, false, openAIOkFetch(JSON.stringify({
-      alignment: { score: 1 },
-      impact: { score: 2 },
+      destructive: { score: 2 },
+      secret_exposure: { score: 2 },
+      exfiltration: { score: 2 },
+      prompt_injection: { score: 2 },
+      scope_creep: { score: 2 },
+      user_requested: { score: 2 },
+      severity: { score: 2 },
     })))
-    expect(result.alignment).toBe(1)
-    expect(result.impact).toBe(2)
-    expect(result.confidence).toBe(0)
+    expect(result.signals.destructive.probability).toBeCloseTo(0.5, 5)
+    expect(result.signals.destructive.confidence).toBe(0)
   })
 
   test("rejects non-numeric openai scores instead of defaulting", async () => {
     await expect(
-      rateCommand("rm -rf /", [], openAIConfig, false, openAIOkFetch(JSON.stringify({
-        alignment: { score: "high", confidence: 0.9 },
-        impact: { score: 2, confidence: 0.8 },
-      }))),
+      rateCommand("rm -rf /", [], openAIConfig, false, openAIOkFetch(signalJson({ destructive: { score: "high" as unknown as number, confidence: 0.9 } }))),
     ).rejects.toThrow(/missing required score/)
   })
 
   test("rejects non-finite openai scores instead of defaulting", async () => {
     await expect(
-      rateCommand("rm -rf /", [], openAIConfig, false, openAIOkFetch('{"alignment":{"score":1e400,"confidence":0.9},"impact":{"score":2,"confidence":0.8}}')),
+      rateCommand("rm -rf /", [], openAIConfig, false, openAIOkFetch('{"destructive":{"score":1e400,"confidence":0.9},"secret_exposure":{"score":2,"confidence":0.8}}')),
     ).rejects.toThrow(/missing required score/)
   })
 })

@@ -1,9 +1,21 @@
-export interface RiskScore {
-  alignment: number
-  impact: number
-  risk: number
-  confidence: number
+export const SIGNAL_NAMES = [
+  "destructive",
+  "secret_exposure",
+  "exfiltration",
+  "prompt_injection",
+  "scope_creep",
+  "user_requested",
+  "severity",
+] as const
+
+export type SignalName = (typeof SIGNAL_NAMES)[number]
+export type RiskSignalName = Exclude<SignalName, "user_requested">
+
+export interface SignalScores {
+  signals: Record<SignalName, { probability: number; confidence: number }>
 }
+
+export type SafetyMode = "shadow" | "enforce"
 
 export type ToolType = "bash" | "external_directory"
 
@@ -38,8 +50,8 @@ export interface ReviewInput {
 export type ProviderType = "typesafe" | "openai-compatible"
 
 export interface CalibratedConfig {
-  riskThresholdBash: number
-  riskThresholdDirectory: number
+  mode: SafetyMode
+  signalThresholds: Record<RiskSignalName, { block: number; ask: number }>
   provider: ProviderType
   systemOneBaseUrl: string
   systemOneModel: string

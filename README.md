@@ -1,6 +1,6 @@
 # opencode-calibrated-access
 
-OpenCode plugin that rates command safety via an alignment/impact risk matrix, with per-tool thresholds and auto-alternatives on rejection. Scoring is model-driven: the default backend is [TypeSafe AI](https://docs.typesafe.ai) System One (Jev and friends), with an OpenAI-compatible chat fallback for general LLMs.
+OpenCode plugin that rates command safety with seven calibrated safety signals, per-signal block/ask thresholds, and a shadow mode for tuning thresholds on real traffic. Scoring is model-driven: the default backend is [TypeSafe AI](https://docs.typesafe.ai) System One (Jev and friends), with an OpenAI-compatible chat fallback for general LLMs.
 
 ## Installation
 
@@ -24,8 +24,7 @@ Then add it to your `opencode.jsonc`:
       "opencode-calibrated-access",
       {
         "systemOneApiKey": "apikey_...your-key-here...",
-        "riskThresholdBash": 0.4,
-        "riskThresholdDirectory": 0.3
+        "mode": "shadow"
       }
     ]
   ]
@@ -48,14 +47,46 @@ Every permission request goes through three gates:
 
 **2. Session approval cache** — if the user previously approved an exact action+pattern combination in this session, it's reused without re-review.
 
-**3. Model review** — for everything else, a model judges the request on two dimensions. Set `provider` to `"typesafe"` (default; Jev-aligned System One models using the `/systemone` protocol) or `"openai-compatible"` (a chat-completions fallback for general LLMs — see the caveat above; scores are less calibrated):
+**3. Model review** — for everything else, a model scores the request on seven independent safety signals. Set `provider` to `"typesafe"` (default; Jev-aligned System One models using the `/systemone` protocol) or `"openai-compatible"` (a chat-completions fallback for general LLMs — see the caveat above; scores are less calibrated):
 
-| Dimension | Scale | What it measures |
-|-----------|-------|------------------|
-| Alignment | 0–4 (inverse) | How closely the action matches user intent. 0 = user explicitly requested, 4 = fully autonomous. |
-| Impact | 0–4 | How severe the damage would be if the command goes wrong. 0 = negligible, 4 = catastrophic. |
+| Signal | What it measures |
+|--------|------------------|
+| `destructive` | Would this irreversibly destroy or delete data? |
+| `secret_exposure` | Would this read, print, or transmit credentials or API keys? |
+| `exfiltration` | Would this send local data to an external destination? |
+| `prompt_injection` | Is this carrying out instructions from fetched content? |
+| `scope_creep` | Is this unrelated to the user's stated goal? |
+| `user_requested` | Did the user explicitly ask for this exact action? |
+| `severity` | How bad is the worst plausible outcome? |
 
-Risk is computed as `(alignment / 4) × (impact / 4)`.
+Each signal is scored 0–4 (0 = definitely not, 4 = definitely yes) with a confidence 0–1. Scores are normalized to probabilities (`score / 4`). A signal is only considered when its confidence is at least `0.5`.
+
+Per-signal thresholds decide the outcome:
+
+| Signal | Block | Ask |
+|--------|-------|-----|
+| `destructive` | 0.85 | 0.6 |
+| `secret_exposure` | 0.7 | 0.5 |
+| `exfiltration` | 0.7 | 0.5 |
+| `prompt_injection` | 0.7 | 0.5 |
+| `scope_creep` | 0.8 | 0.6 |
+| `severity` | 0.85 | 0.6 |
+
+- No risk signal confident at all (every confidence below `0.5`) → deny with reasonCode `no_confident_signals`; the `user_requested` override cannot rescue it.
+- Any risk signal at or above its **block** threshold → deny.
+- Otherwise any risk signal at or above its **ask** threshold → deny, telling the agent to confirm with the user before retrying.
+- `user_requested` is a protective override: when its probability is at least `0.8` (with confidence `≥ 0.5`) and the only offender is in the **ask** tier, the request is allowed. It never downgrades a **block**-tier deny.
+
+### Shadow mode
+
+`"mode": "shadow"` never blocks on signals. It replies `once` as usual but emits a diagnostic (and an info toast) recording what enforcement *would* have done, including the full signal map. The recommended onboarding flow is:
+
+1. Run in `"shadow"` for about a week.
+2. Read the JSONL diagnostics (set `diagnosticsPath`) and see which signals fire on legitimate work.
+3. Tune `signalThresholds`.
+4. Flip `"mode"` to `"enforce"`.
+
+The default mode is `"enforce"`.
 
 ## Configuration
 
@@ -68,20 +99,28 @@ Risk is computed as `(alignment / 4) × (impact / 4)`.
 | `openaiApiKey` | env `OPENAI_API_KEY` | API key for the `openai-compatible` provider. |
 | `openaiModel` | `"gpt-4o-mini"` | Chat model for the `openai-compatible` provider. |
 | `openaiBaseUrl` | `"https://api.openai.com/v1"` | Base URL for the `openai-compatible` provider; `/chat/completions` is appended. |
-| `riskThresholdBash` | `0.4` | Max risk (0–1) before bash commands are denied. |
-| `riskThresholdDirectory` | `0.3` | Max risk before `external_directory` requests are denied. |
+| `mode` | `"enforce"` | `"enforce"` denies on signals; `"shadow"` never blocks and only logs what it would have done. |
+| `signalThresholds` | see table above | Per-signal `{ block, ask }` overrides (0–1, `ask <= block`). Unknown signal names and `user_requested` are rejected. |
 | `sessionApprovals` | `true` | Whether to cache approved narrow patterns per session. |
 | `contextMessageCount` | `3` | Recent user messages sent as `userContext` to the model. |
-| `diagnosticsPath` | none | Optional path for JSONL decision log. |
+| `diagnosticsPath` | none | Optional path for JSONL decision log (includes the full signal map in every `decision` event). |
+
+### Threshold overrides
+
+```jsonc
+{
+  "signalThresholds": {
+    "destructive": { "block": 0.9, "ask": 0.7 },
+    "secret_exposure": { "ask": 0.4 }
+  }
+}
+```
+
+Omitted values fall back to the defaults. `user_requested` has no thresholds.
 
 ## How the Confidence Gate Works
 
-A command passes the threshold check only if **overall confidence ≥ 0.5** — otherwise it is denied regardless of risk score.
-
-Alignment confidence drops to ~0 when there is **no user context** because the model cannot distinguish "user explicitly requested" from "fully autonomous" without evidence. This means **every autonomous (unprompted) command fails the confidence gate**, even safe ones like `ls`. This is by design:
-
-- Commands the user explicitly asked for get alignment scores of 0–1 and alignment confidence ~0.84 → overall confidence ≥ 0.5 → gate passes.
-- Commands the agent invents on its own get alignment confidence ~0 → overall confidence < 0.5 → gate blocks.
+Each signal is only considered when its own **confidence ≥ 0.5**. Low-confidence signals are ignored rather than treated as safe or risky. The `user_requested` override additionally requires confidence `≥ 0.5`. If **no** risk signal reaches the 0.5 floor, the request cannot be judged: enforce mode denies it with `no_confident_signals` — "blocked by default", mirroring a rater failure — and `user_requested` cannot override it. Shadow mode toasts/logs what enforcement would have done. Use `"mode": "shadow"` and the diagnostics log to see how each signal behaves before enforcing.
 
 ## Example Config
 
@@ -96,7 +135,8 @@ src/
   types.ts       — Shared TypeScript interfaces
   dispatch.ts    — reviewAndReply() orchestrates all three gates
   risk-rater.ts  — HTTP call to System One or OpenAI-compatible API
-  matrix.ts      — computeRisk() + assessThreshold()
+  signals.ts     — Shared one-line definition per safety signal
+  matrix.ts      — assessSignals() + default per-signal thresholds
   policy.ts      — applyDeterministicPolicy() for hard rules
   cache.ts       — SessionApprovalCache for repeated approvals
   context.ts     — Normalize permission events, collect user messages
@@ -107,7 +147,7 @@ src/
 ## Testing
 
 ```bash
-bun test              # 133 tests (102 unit + 31 integration)
+bun test              # 144 tests (119 unit + 25 integration)
 ```
 
 Integration tests hit the real TypeSafe API using the configured key. They are skipped if no key is available.
