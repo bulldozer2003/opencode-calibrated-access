@@ -52,6 +52,54 @@ describe("applyDeterministicPolicy", () => {
     expect(applyDeterministicPolicy(value)?.reasonCode).toBe("explicit_user_prohibition")
   })
 
+  test("denies a command the latest human message prohibits with a contraction", () => {
+    const value = input("rm -rf build/")
+    value.context.userMessages = ["don't run `rm -rf build/`"]
+    expect(applyDeterministicPolicy(value)?.reasonCode).toBe("explicit_user_prohibition")
+  })
+
+  test("denies a command the latest human message prohibits with never", () => {
+    const value = input("rm -rf build/")
+    value.context.userMessages = ["never run `rm -rf build/`"]
+    expect(applyDeterministicPolicy(value)?.reasonCode).toBe("explicit_user_prohibition")
+  })
+
+  test("denies a command the latest human message prohibits with mustn't", () => {
+    const value = input("rm -rf build/")
+    value.context.userMessages = ["you mustn't run `rm -rf build/`"]
+    expect(applyDeterministicPolicy(value)?.reasonCode).toBe("explicit_user_prohibition")
+  })
+
+  test("denies a command the latest human message calls forbidden", () => {
+    const value = input("rm -rf build/")
+    value.context.userMessages = ["`rm -rf build/` is forbidden"]
+    expect(applyDeterministicPolicy(value)?.reasonCode).toBe("explicit_user_prohibition")
+  })
+
+  test("denies a command the latest human message calls off-limits", () => {
+    const value = input("rm -rf build/")
+    value.context.userMessages = ["`rm -rf build/` is off-limits"]
+    expect(applyDeterministicPolicy(value)?.reasonCode).toBe("explicit_user_prohibition")
+  })
+
+  test("denies when the prohibition appears in an earlier recent message", () => {
+    const value = input("rm -rf build/")
+    value.context.userMessages = ["never run `rm -rf build/`", "go ahead with the cleanup"]
+    expect(applyDeterministicPolicy(value)?.reasonCode).toBe("explicit_user_prohibition")
+  })
+
+  test("does not deny a different command when a prohibition phrase is present", () => {
+    const value = input("touch /tmp/other")
+    value.context.userMessages = ["never run `rm -rf build/`"]
+    expect(applyDeterministicPolicy(value)).toBeNull()
+  })
+
+  test("does not deny when the prohibition is older than the recent window", () => {
+    const value = input("rm -rf build/")
+    value.context.userMessages = ["never run `rm -rf build/`", "one", "two", "three"]
+    expect(applyDeterministicPolicy(value)).toBeNull()
+  })
+
   test("denies matching external directory when human explicitly prohibits", () => {
     expect(
       applyDeterministicPolicy({

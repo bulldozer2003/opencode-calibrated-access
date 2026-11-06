@@ -212,22 +212,25 @@ function isRoutineLocalCommand(command: string): boolean {
   ].some((pattern) => pattern.test(value))
 }
 
+const PROHIBITION_PHRASE =
+  /\b(?:explicitly prohibit|(?:do not|don't|never|must not|mustn't)\s+(?:run|execute|use|access)|forbidden|off-limits)\b/i
+
 function explicitlyProhibited(input: ReviewInput): boolean {
-  const message = input.context.userMessages.at(-1)
-  if (!message || !/\b(?:explicitly prohibit|do not (?:run|execute|use|access)|must not (?:run|execute|use|access))\b/i.test(message)) {
-    return false
-  }
+  const recent = input.context.userMessages.slice(-3).filter((message) => PROHIBITION_PHRASE.test(message))
+  if (recent.length === 0) return false
 
   const command = commandText(input)
-  if (input.request.action === "bash" && command && message.includes(command)) {
+  if (input.request.action === "bash" && command && recent.some((message) => message.includes(command))) {
     return true
   }
 
   if (input.request.action !== "external_directory") return false
-  return input.request.resources.some((resource) => {
-    const prefix = resource.replace(/[?*].*$/, "")
-    return prefix.length > 1 && message.includes(prefix)
-  })
+  return recent.some((message) =>
+    input.request.resources.some((resource) => {
+      const prefix = resource.replace(/[?*].*$/, "")
+      return prefix.length > 1 && message.includes(prefix)
+    }),
+  )
 }
 
 function deny(reasonCode: string, reason: string): Decision {
