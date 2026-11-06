@@ -3,7 +3,7 @@ import { parseConfig } from "./config.ts"
 import { normalizeAskedEvent, normalizeRepliedEvent } from "./context.ts"
 import { SessionApprovalCache } from "./cache.ts"
 import { reviewAndReply } from "./dispatch.ts"
-import { writeDiagnostic } from "./diagnostics.ts"
+import { writeDiagnostic, describeError } from "./diagnostics.ts"
 
 interface PluginOverrides {
   client?: ReviewerClient
@@ -98,11 +98,6 @@ function cancelInFlight(inFlight: Map<string, AbortController>, requestID: strin
   if (controller && !controller.signal.aborted) {
     controller.abort("permission resolved")
   }
-}
-
-function describeError(error: unknown): { name: string; message: string } {
-  if (error instanceof Error) return { name: error.name, message: error.message }
-  return { name: typeof error, message: String(error) }
 }
 
 function writeDiag(config: CalibratedConfig, data: Record<string, unknown>): void {

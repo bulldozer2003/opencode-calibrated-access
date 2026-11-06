@@ -18,4 +18,19 @@ describe("buildContinuationMessage", () => {
     const msg = buildContinuationMessage("risky", ["git reset --hard"])
     expect(msg).toInclude("safer alternative")
   })
+
+  test("appends provided alternatives as bullets", () => {
+    const msg = buildContinuationMessage("would expose a secret", ["echo $API_KEY"], [
+      "Use gh auth login.",
+      "Pass secrets via stdin.",
+    ])
+    expect(msg).toInclude("Safer alternatives:")
+    expect(msg).toInclude("- Use gh auth login.")
+    expect(msg).toInclude("- Pass secrets via stdin.")
+  })
+
+  test("omits the alternatives heading when none are provided", () => {
+    const msg = buildContinuationMessage("risky", ["git reset --hard"])
+    expect(msg).not.toInclude("Safer alternatives:")
+  })
 })

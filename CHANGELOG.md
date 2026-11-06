@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0 — 2026-11-06
+
+- New deterministic secret-exposure detection (`detectSecretExposure`): blocks commands that would print, redirect, or transmit secrets — `echo $API_KEY`, `printenv GITHUB_TOKEN`, `env > creds.txt`, `printenv | curl`, `curl` auth headers/queries with `$VAR` secrets, git URLs with inline credentials, and secret vars piped or redirected. Detection is conservative: prose words like "token", flag names, and non-secret contexts (`grep token`, `ssh-keygen`, `printenv PATH`, `env | grep TERM`) are not blocked.
+- Denials now carry actionable, secret-free `alternatives` (`src/alternatives.ts`), surfaced in both the rejection message and the agent continuation message under a `Safer alternatives:` heading.
+- Shadow mode now also applies to deterministic denies: secret-exposure denies are logged and allowed through. `catastrophic_delete` and `explicit_user_prohibition` remain enforced in every mode.
+- Fix: `sessionApprovals: false` now disables the session-approval cache entirely (no reads or writes); previously it had no effect.
+- Docs: README secret-exposure section; 180 tests (155 unit + 25 integration).
+
 ## 0.3.0 — 2026-11-03
 
 - **Breaking:** removed `riskThresholdBash` and `riskThresholdDirectory`. The 2-axis alignment/impact risk matrix is replaced by seven calibrated safety signals: `destructive`, `secret_exposure`, `exfiltration`, `prompt_injection`, `scope_creep`, `user_requested`, `severity`.

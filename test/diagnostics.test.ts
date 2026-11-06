@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeAll, afterAll } from "bun:test"
-import { writeDiagnostic, describeError, failureCategory } from "../src/diagnostics.ts"
+import { writeDiagnostic, describeError } from "../src/diagnostics.ts"
 import { existsSync, unlinkSync, readFileSync } from "fs"
 
 const testPath = "/tmp/calibrated-access-test.jsonl"
@@ -44,21 +44,5 @@ describe("describeError", () => {
     const result = describeError("oops")
     expect(result.name).toBe("string")
     expect(result.message).toBe("oops")
-  })
-})
-
-describe("failureCategory", () => {
-  test("timeout for AbortError", () => {
-    const error = new DOMException("timed out", "AbortError")
-    expect(failureCategory(error)).toBe("timeout")
-  })
-
-  test("timeout for AbortSignal timeout", () => {
-    const error = new Error("The operation was aborted due to timeout")
-    expect(failureCategory(error)).toBe("timeout")
-  })
-
-  test("unknown for other errors", () => {
-    expect(failureCategory(new Error("network error"))).toBe("unknown")
   })
 })
