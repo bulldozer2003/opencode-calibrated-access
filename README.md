@@ -71,15 +71,15 @@ This uses the same `/systemone` protocol as TypeSafe, so scores are Jev-aligned 
 
 ### Option C — `openai-compatible` fallback (last resort)
 
-Setting `"provider": "openai-compatible"` uses a plain chat-completions LLM (`openaiApiKey` / `openaiModel` / `openaiBaseUrl`) that parses scores out of free-form JSON. It is **not** a Jev-aligned scorer — expect less calibrated scores and a much higher chance of misrating a command. Only use it when no System One model is available.
+See the [Installation caveat](#installation) for why this is a last resort.
 
 > **Naming trap:** Despite the name, OpenRouter users should **NOT** choose this provider — OpenRouter speaks the System One protocol natively (Option B). This option is only for plain chat-completions endpoints with no System One model at all.
 
 ## Verify your setup
 
-1. Start in `"mode": "shadow"` with a `diagnosticsPath` set (e.g. `~/.opencode/calibrated-access.jsonl`).
+1. Start in `"mode": "shadow"` with a `diagnosticsPath` set (e.g. `/home/you/.opencode/calibrated-access.jsonl` — must be absolute; `~` is not expanded).
 2. Restart opencode, then ask the agent to run any benign command (`ls`).
-3. Working = an info toast appears and a `decision` event lands in the JSONL file.
+3. Working = a `decision` event lands in the JSONL file (in shadow mode, toasts only appear for commands the plugin would have blocked or escalated — a benign `ls` scores allow, so expect the JSONL event, not a toast).
 4. Nothing happened? `permission.bash` is not `"ask"` — the plugin only sees permission requests (re-read the warning in Installation).
 5. Once satisfied, flip `"mode"` to `"enforce"` (see the Shadow mode onboarding flow in How It Works for the full tuning sequence).
 
@@ -233,7 +233,7 @@ bun test --watch      # iterate
 bun run check         # tsc --noEmit
 ```
 
-Integration tests hit the real System One API using the `TYPESAFE_API_KEY` env var and are skipped when it is unset.
+Integration tests hit the real System One API only when `TYPESAFE_API_KEY` is set to an `apikey_`-prefixed key; otherwise they early-return as vacuous passes (an OpenRouter `sk-or-` key is not `apikey_`-prefixed, so it does not run them).
 
 ## Publishing
 
