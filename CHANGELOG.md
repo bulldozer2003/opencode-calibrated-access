@@ -6,8 +6,12 @@
 - Extends secret-exposure detection to secret-bearing files: stdout read utilities (`cat`, `head`, `tail`, `less`, `more`, `bat`, `grep`, `rg`, `awk`, `sed`, `strings`) on secret-file paths (`cat .env`, `less ~/.ssh/id_rsa`, `bat server.pem`) and `git add` of an explicit secret-file path (`git add .env`, `git add -f server.pem`) are denied. Sourcing (`. .env && cmd`, `source .env`), process-substitution consumption (`curl -K <(printf ... "$API_KEY")`), `cp`/`chmod`, non-secret file reads, and indiscriminate staging (`git add .`, `git add -A`) stay allowed.
 - Denials now carry actionable, secret-free `alternatives` (`src/alternatives.ts`), surfaced in both the rejection message and the agent continuation message under a `Safer alternatives:` heading.
 - Shadow mode now also applies to deterministic denies: secret-exposure denies are logged and allowed through. `catastrophic_delete` and `explicit_user_prohibition` remain enforced in every mode.
+- New `user_prohibited` safety signal — the eighth: "Did the user explicitly or implicitly forbid this action in the conversation (prohibitions, exclusions, refusals, off-limits areas)?" Mirror of `user_requested`: model-scored by both providers, default thresholds 0.7/0.5, overridable via `signalThresholds`. Extra prompt contexts flag version-control staging that could include secret files the user excluded (`git add .`, `git add -A`, `git commit -a`, `git stash -u`) and declared off-limits areas; blocks carry staging-specific safer alternatives (stage files individually after confirming none are secret-bearing; run `git status` first and add only the intended paths).
 - Fix: `sessionApprovals: false` now disables the session-approval cache entirely (no reads or writes); previously it had no effect.
-- Docs: README secret-exposure section; 201 tests.
+- Fix: broadened explicit user-prohibition phrase matching in the deterministic policy gate — the gate that blocks commands the user prohibited in their last message, enforced in every mode, now recognizes more prohibition phrasings.
+- Fix: wired `resumeAfterDenial` to the session continuation — denials and reviewer failures now pass a continuation message (deny reason plus safer alternatives) to the agent so it can recover with a lower-risk step instead of stalling.
+- Docs: README secret-exposure section; 227 tests.
+- Docs: working GitHub install instructions, new Provider Options section (TypeSafe / existing OpenRouter key / OpenAI-compatible last resort), Verify your setup steps, and Development quickstart with Bun prerequisites, and documented `user_prohibited` as the eighth signal across README, opencode.jsonc.example, and AGENTS.md.
 
 ## 0.3.0 — 2026-11-03
 
