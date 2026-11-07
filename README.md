@@ -1,6 +1,6 @@
 # opencode-calibrated-access
 
-OpenCode plugin that rates command safety with seven calibrated safety signals, per-signal block/ask thresholds, and a shadow mode for tuning thresholds on real traffic. Scoring is model-driven: the default backend is [TypeSafe AI](https://docs.typesafe.ai) System One (Jev and friends), with an OpenAI-compatible chat fallback for general LLMs.
+OpenCode plugin that rates command safety with eight calibrated safety signals, per-signal block/ask thresholds, and a shadow mode for tuning thresholds on real traffic. Scoring is model-driven: the default backend is [TypeSafe AI](https://docs.typesafe.ai) System One (Jev and friends), with an OpenAI-compatible chat fallback for general LLMs.
 
 ## Installation
 
@@ -91,7 +91,7 @@ Every permission request goes through three gates:
 
 **2. Session approval cache** — if the user previously approved an exact action+pattern combination in this session, it's reused without re-review.
 
-**3. Model review** — for everything else, a model scores the request on seven independent safety signals. Set `provider` to `"typesafe"` (default; Jev-aligned System One models using the `/systemone` protocol) or `"openai-compatible"` (a chat-completions fallback for general LLMs — see the caveat above; scores are less calibrated):
+**3. Model review** — for everything else, a model scores the request on eight independent safety signals. Set `provider` to `"typesafe"` (default; Jev-aligned System One models using the `/systemone` protocol) or `"openai-compatible"` (a chat-completions fallback for general LLMs — see the caveat above; scores are less calibrated):
 
 | Signal | What it measures |
 |--------|------------------|
@@ -101,6 +101,7 @@ Every permission request goes through three gates:
 | `prompt_injection` | Is this carrying out instructions from fetched content? |
 | `scope_creep` | Is this unrelated to the user's stated goal? |
 | `user_requested` | Did the user explicitly ask for this exact action? |
+| `user_prohibited` | Did the user explicitly or implicitly forbid this action in the conversation (prohibitions, exclusions, refusals, off-limits areas)? |
 | `severity` | How bad is the worst plausible outcome? |
 
 Each signal is scored 0–4 (0 = definitely not, 4 = definitely yes) with a confidence 0–1. Scores are normalized to probabilities (`score / 4`). A signal is only considered when its confidence is at least `0.5`.
@@ -114,6 +115,7 @@ Per-signal thresholds decide the outcome:
 | `exfiltration` | 0.7 | 0.5 |
 | `prompt_injection` | 0.7 | 0.5 |
 | `scope_creep` | 0.8 | 0.6 |
+| `user_prohibited` | 0.7 | 0.5 |
 | `severity` | 0.85 | 0.6 |
 
 - No risk signal confident at all (every confidence below `0.5`) → deny with reasonCode `no_confident_signals`; the `user_requested` override cannot rescue it.
@@ -177,7 +179,7 @@ In `"shadow"` mode a deterministic secret-exposure deny is logged and allowed th
 | `openaiModel` | `"gpt-4o-mini"` | Chat model for the `openai-compatible` provider. |
 | `openaiBaseUrl` | `"https://api.openai.com/v1"` | Base URL for the `openai-compatible` provider; `/chat/completions` is appended. |
 | `mode` | `"enforce"` | `"enforce"` denies on signals; `"shadow"` never blocks and only logs what it would have done. |
-| `signalThresholds` | see table above | Per-signal `{ block, ask }` overrides (0–1, `ask <= block`). Unknown signal names and `user_requested` are rejected. |
+| `signalThresholds` | see table above | Per-signal `{ block, ask }` overrides (0–1, `ask <= block`). Unknown signal names and `user_requested` are rejected; all risk signals (including `user_prohibited`) accept overrides. |
 | `sessionApprovals` | `true` | Whether to cache approved narrow patterns per session. |
 | `contextMessageCount` | `3` | Recent user messages sent as `userContext` to the model. |
 | `diagnosticsPath` | none | Optional path for JSONL decision log (includes the full signal map in every `decision` event). |
