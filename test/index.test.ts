@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { installReviewer } from "../src/index.ts"
+import { installReviewer } from "../src/reviewer.ts"
 import type { ReviewerClient, RuntimeContext } from "../src/types.ts"
 
 type Handler = (event: unknown) => void

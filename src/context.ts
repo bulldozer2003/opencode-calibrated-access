@@ -23,7 +23,12 @@ export function normalizeAskedEvent(event: unknown): PermissionRequest | null {
     }
   }
 
+  if (event.type === "permission.asked") return normalizeStableAsk(data)
   if (event.type !== "permission.updated") return null
+  return normalizeStableAsk(data)
+}
+
+function normalizeStableAsk(data: Record<string, unknown> | null): PermissionRequest | null {
   if (!data || typeof data.id !== "string" || typeof data.sessionID !== "string") return null
   const action = typeof data.permission === "string" ? data.permission : data.type
   const rawResources = data.patterns ?? data.pattern

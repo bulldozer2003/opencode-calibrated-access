@@ -57,6 +57,43 @@ describe("normalizeAskedEvent", () => {
     expect(result!.protocol).toBe("stable")
   })
 
+  test("normalizes the 1.19 stable permission.asked payload", () => {
+    const event = {
+      type: "permission.asked",
+      properties: {
+        id: "per_1",
+        sessionID: "sess1",
+        permission: "bash",
+        patterns: ["ls"],
+        always: [],
+      },
+    }
+    expect(normalizeAskedEvent(event)).toEqual({
+      id: "per_1",
+      sessionID: "sess1",
+      action: "bash",
+      resources: ["ls"],
+      always: [],
+      protocol: "stable",
+    })
+  })
+
+  test("returns null for 1.19 permission.asked with non-string patterns", () => {
+    const event = {
+      type: "permission.asked",
+      properties: { id: "per_2", sessionID: "sess1", permission: "bash", patterns: [123], always: [] },
+    }
+    expect(normalizeAskedEvent(event)).toBeNull()
+  })
+
+  test("returns null for 1.19 permission.asked without a permission name", () => {
+    const event = {
+      type: "permission.asked",
+      properties: { id: "per_3", sessionID: "sess1", patterns: ["ls"], always: [] },
+    }
+    expect(normalizeAskedEvent(event)).toBeNull()
+  })
+
   test("returns null for unknown event type", () => {
     expect(normalizeAskedEvent({ type: "unknown", data: {} })).toBeNull()
   })
