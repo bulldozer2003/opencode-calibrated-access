@@ -84,7 +84,7 @@ export interface RuntimeContext {
       root(sessionID: string): string | Promise<string>
       get(sessionID: string): { id: string; parentID?: string } | undefined
       message: {
-        list(sessionID: string): unknown[]
+        list(sessionID: string): unknown[] | Promise<unknown[]>
         get(sessionID: string, messageID: string): unknown
         sync(sessionID: string): Promise<void>
       }

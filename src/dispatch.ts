@@ -24,7 +24,7 @@ export async function reviewAndReply(
     const rootSessionID = await resolveRootSessionID(context, request.sessionID)
     if (signal.aborted || !rootSessionID) return
 
-    const rawMessages = listMessages(context, rootSessionID)
+    const rawMessages = await listMessages(context, rootSessionID)
     const messages = collectUserMessages(rawMessages, config.contextMessageCount)
     const reviewInput = {
       request: {
@@ -237,9 +237,9 @@ async function resolveRootSessionID(context: RuntimeContext, sessionID: string):
   }
 }
 
-function listMessages(context: RuntimeContext, sessionID: string): unknown[] {
+async function listMessages(context: RuntimeContext, sessionID: string): Promise<unknown[]> {
   try {
-    return context.data.session.message.list(sessionID)
+    return await context.data.session.message.list(sessionID)
   } catch {
     return []
   }

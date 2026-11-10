@@ -209,7 +209,8 @@ See [`opencode.jsonc.example`](./opencode.jsonc.example) for a complete config r
 
 ```
 src/
-  index.ts       — Plugin entry point, installReviewer()
+  index.ts       — V1 plugin entry (CalibratedAccessPlugin)
+  reviewer.ts    — installReviewer() wiring for permission events
   config.ts      — Parse plugin options with defaults
   types.ts       — Shared TypeScript interfaces
   dispatch.ts    — reviewAndReply() orchestrates all three gates
@@ -230,7 +231,7 @@ Prerequisites: [Bun](https://bun.sh) (runs tests + typecheck) and Node ≥ 22 (p
 
 ```bash
 bun install           # one-time setup after cloning
-bun test              # 227 tests
+bun test              # 237 tests
 bun test --watch      # iterate
 bun run check         # tsc --noEmit
 ```

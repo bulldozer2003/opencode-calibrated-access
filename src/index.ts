@@ -1,121 +1,118 @@
-import type { RuntimeContext, CalibratedConfig, ReviewerClient, PermissionRequest } from "./types.ts"
-import { parseConfig } from "./config.ts"
-import { normalizeAskedEvent, normalizeRepliedEvent } from "./context.ts"
-import { SessionApprovalCache } from "./cache.ts"
-import { reviewAndReply } from "./dispatch.ts"
-import { writeDiagnostic, describeError } from "./diagnostics.ts"
+import type { RuntimeContext } from "./types.ts"
+import { installReviewer } from "./reviewer.ts"
 
-interface PluginOverrides {
-  client?: ReviewerClient
-  onDecision?(request: PermissionRequest, decision: { kind: string; reasonCode: string }): void
-  onFailure?(request: PermissionRequest, error: unknown): void
+type EventHandler = (event: unknown) => void
+
+interface SessionRecord {
+  id?: string
+  parentID?: string
 }
 
-export function installReviewer(context: RuntimeContext, overrides: PluginOverrides = {}): () => void {
-  const config = parseConfig(context.options)
-  const inFlight = new Map<string, AbortController>()
-  const cache = new SessionApprovalCache()
-  const runtime: RuntimeContext = {
-    ...context,
-    resumeAfterDenial: context.resumeAfterDenial ?? ((sessionID, message) => {
-      void resumeSession(context.client, sessionID, message)
-    }),
-  }
-
-  writeDiag(config, { event: "plugin_started" })
-
-  const offReplied = context.data.on("permission.v2.replied", (event) => {
-    const reply = normalizeRepliedEvent(event)
-    if (reply) cancelInFlight(inFlight, reply.requestID)
-  })
-
-  const offStableReplied = context.data.on("permission.replied", (event) => {
-    const reply = normalizeRepliedEvent(event)
-    if (reply) cancelInFlight(inFlight, reply.requestID)
-  })
-
-  const handler = async (event: unknown) => {
-    const asked = normalizeAskedEvent(event)
-    if (!asked || inFlight.has(asked.id)) return
-
-    const controller = new AbortController()
-    const startedAt = performance.now()
-    inFlight.set(asked.id, controller)
-
-    try {
-      writeDiag(config, { event: "request_received", requestID: asked.id, sessionID: asked.sessionID, action: asked.action })
-      await reviewAndReply(runtime, overrides.client ?? buildClient(context), config, asked, cache, startedAt, controller.signal)
-    } catch (error) {
-      if (controller.signal.aborted) return
-      overrides.onFailure?.(asked, error)
-      writeDiag(config, { event: "failure", requestID: asked.id, error: describeError(error).message })
-    } finally {
-      if (inFlight.get(asked.id) === controller) inFlight.delete(asked.id)
-    }
-  }
-
-  const offV2Asked = context.data.on("permission.v2.asked", handler)
-  const offStableAsked = context.data.on("permission.asked", handler)
-  const offUpdated = context.data.on("permission.updated", handler)
-
-  return () => {
-    offV2Asked()
-    offStableAsked()
-    offUpdated()
-    offReplied()
-    offStableReplied()
-    for (const c of inFlight.values()) c.abort("plugin disposed")
-    inFlight.clear()
-    cache.clear()
+interface SessionClient {
+  session?: {
+    get?(input: { path: { id: string } }): Promise<unknown>
+    messages?(input: { path: { id: string } }): Promise<unknown>
   }
 }
 
-async function resumeSession(client: unknown, sessionID: string, message: string): Promise<void> {
-  const session = (client as Record<string, any> | null | undefined)?.session
-  if (!session) return
-  const prompt = typeof session.promptAsync === "function" ? session.promptAsync : session.prompt
-  if (typeof prompt !== "function") return
-  try {
-    await prompt.call(session, { path: { id: sessionID }, body: { parts: [{ type: "text", text: message }] } })
-  } catch {}
+export interface CalibratedAccessPluginInput {
+  client?: unknown
 }
 
-function buildClient(context: RuntimeContext): ReviewerClient {
+export interface CalibratedAccessHooks {
+  event(input: { event: unknown }): Promise<void>
+  dispose(): Promise<void>
+}
+
+export const CalibratedAccessPlugin = async (
+  input: CalibratedAccessPluginInput = {},
+  options: Record<string, unknown> = {},
+): Promise<CalibratedAccessHooks> => {
+  const client = (input.client ?? {}) as SessionClient
+  const handlers = new Map<string, EventHandler[]>()
+
+  const context: RuntimeContext = {
+    options,
+    client,
+    data: {
+      on(type, handler) {
+        const list = handlers.get(type) ?? []
+        list.push(handler)
+        handlers.set(type, list)
+        return () => {
+          handlers.set(type, (handlers.get(type) ?? []).filter((item) => item !== handler))
+        }
+      },
+      session: {
+        root: (sessionID) => resolveRoot(client, sessionID),
+        get: () => undefined,
+        message: {
+          list: (sessionID) => fetchMessages(client, sessionID),
+          get: () => undefined,
+          sync: async () => {},
+        },
+        permission: {
+          list: () => undefined,
+          sync: async () => {},
+        },
+      },
+    },
+  }
+
+  const disposeReviewer = installReviewer(context)
+
   return {
-    async reply(input) {
-      const client = context.client as Record<string, any>
-      try {
-        if (typeof client?.permission?.reply === "function") {
-          await client.permission.reply({
-            sessionID: input.sessionID,
-            requestID: input.requestID,
-            reply: input.reply,
-            ...(input.message ? { message: input.message } : {}),
-          })
-          return "replied"
-        }
-        if (typeof client?.postSessionIdPermissionsPermissionId === "function") {
-          await client.postSessionIdPermissionsPermissionId({
-            path: { id: input.sessionID, permissionID: input.requestID },
-            body: { response: input.reply, ...(input.message ? { message: input.message } : {}) },
-          })
-          return "replied"
-        }
-        return "not_found"
-      } catch {
-        return "not_found"
+    async event({ event }) {
+      const type = eventType(event)
+      if (!type) return
+      for (const handler of handlers.get(type) ?? []) {
+        await handler(event)
       }
+    },
+    async dispose() {
+      disposeReviewer()
+      handlers.clear()
     },
   }
 }
 
-function cancelInFlight(inFlight: Map<string, AbortController>, requestID: string): void {
-  const controller = inFlight.get(requestID)
-  if (controller && !controller.signal.aborted) {
-    controller.abort("permission resolved")
+async function resolveRoot(client: SessionClient, sessionID: string): Promise<string> {
+  let id = sessionID
+  for (let depth = 0; depth < 50; depth++) {
+    const parent = (await getSession(client, id))?.parentID
+    if (typeof parent !== "string" || parent.length === 0) return id
+    id = parent
+  }
+  return id
+}
+
+async function getSession(client: SessionClient, sessionID: string): Promise<SessionRecord | undefined> {
+  try {
+    return unwrapData<SessionRecord>(await client.session?.get?.({ path: { id: sessionID } }))
+  } catch {
+    return undefined
   }
 }
 
-function writeDiag(config: CalibratedConfig, data: Record<string, unknown>): void {
-  writeDiagnostic(config.diagnosticsPath, data)
+async function fetchMessages(client: SessionClient, sessionID: string): Promise<unknown[]> {
+  try {
+    const data = unwrapData<unknown>(await client.session?.messages?.({ path: { id: sessionID } }))
+    return Array.isArray(data) ? data : []
+  } catch {
+    return []
+  }
+}
+
+function unwrapData<T>(result: unknown): T | undefined {
+  if (result && typeof result === "object" && "data" in result) {
+    return (result as { data?: T }).data
+  }
+  return result as T | undefined
+}
+
+function eventType(event: unknown): string | undefined {
+  if (event && typeof event === "object" && "type" in event && typeof (event as { type?: unknown }).type === "string") {
+    return (event as { type: string }).type
+  }
+  return undefined
 }
