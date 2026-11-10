@@ -14,6 +14,8 @@ export type RiskSignalName = Exclude<SignalName, "user_requested">
 
 export interface SignalScores {
   signals: Record<SignalName, { probability: number; confidence: number }>
+  usage?: unknown
+  cost?: unknown
 }
 
 export type SafetyMode = "shadow" | "enforce"

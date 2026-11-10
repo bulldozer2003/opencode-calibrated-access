@@ -75,6 +75,53 @@ See the [Installation caveat](#installation) for why this is a last resort.
 
 > **Naming trap:** Despite the name, OpenRouter users should **NOT** choose this provider — OpenRouter speaks the System One protocol natively (Option B). This option is only for plain chat-completions endpoints with no System One model at all.
 
+## Cost
+
+The plugin sends **one scoring request per intercepted permission request** (only for requests that reach the model review gate — the deterministic policy gate and the session approval cache skip the call entirely). Measured request bodies run ~700–950 input tokens (2,050–2,100 chars of questions plus up to ~900 chars of user context at the default `contextMessageCount: 3`). The session approval cache and deterministic policy gate push the real call count below the raw permission-request count.
+
+Per published rates, at the measured request size:
+
+| Option | Input rate | Output rate | Est. per rating | Est. per 1,000 |
+|--------|-----------|-------------|-----------------|----------------|
+| **A/B — System One (Jev)** | $0.042/M | $0/M | ~$0.00003–0.00004 | ~$0.03–0.04 |
+| **C — `openai-compatible` (e.g. gpt-4o-mini)** | $0.15/M | $0.60/M | ~$0.0004 | ~$0.40 |
+
+- **Option A/B (TypeSafe or OpenRouter Jev)** is the cheap path: Jev's output is score-only, priced at $0/M output. At 500 ratings/day that is roughly **$0.50/month**. OpenRouter adds a ~5.5% credit-purchase fee on top. The published 80 req/s rate limit is irrelevant at agent scale.
+- **Option C (chat-completions fallback)** costs roughly **10×** Jev — gpt-4o-mini is $0.15/M input and $0.60/M output, and the JSON output (~8 signals × ~50 tokens ≈ 400 output tokens) dominates the bill at ~$0.0004 per rating. Still negligible.
+- Both figures are per published rates and will drift as providers change pricing; they exclude retries and re-ratings.
+
+The response may also include `usage`/`cost` fields. The plugin passes them through untouched on the `SignalScores` result (they are optional and never required), and the integration test prints the measured per-call `usage`/`cost` when `TYPESAFE_API_KEY` is set — see the note under Development. When the live API omits them the test warns rather than fails.
+
+### Measure your actual spend
+
+The estimates above are published rates, not your bill. In shadow (or enforce) mode with `diagnosticsPath` set, every model-reviewed `decision` event is written to the JSONL log with the API's `usage` (and `cost`, when the provider returns one) attached; policy- and session-sourced decisions carry neither, since no model call was made. Sum your own traffic with the bundled, dependency-free script:
+
+```bash
+bun run scripts/sum-diagnostics.ts /home/you/.opencode/calibrated-access.jsonl
+```
+
+Sample output:
+
+```
+Diagnostics summary
+total events: 128
+decision events: 96 (model-reviewed: 84)
+input tokens: 74312
+output tokens: 10420
+est. USD: $0.003121 (estimated at $0.042/M input)
+malformed lines: 0
+
+Per day:
+  2026-11-08  41
+  2026-11-09  55
+
+Per session:
+  ses_abc123  60
+  ses_def456  36
+```
+
+The script reads both token shapes (`input_tokens`/`output_tokens` and `prompt_tokens`/`completion_tokens`), tolerates `cost: null` (TypeSafe's current behaviour) and malformed lines (skipped and counted), and reports **USD measured** from the provider's `cost` when present — otherwise it falls back to **est. USD** at the published Jev input rate ($0.042/M), labelled as an estimate.
+
 ## Verify your setup
 
 1. Start in `"mode": "shadow"` with a `diagnosticsPath` set (e.g. `/home/you/.opencode/calibrated-access.jsonl` — use an absolute path; relative paths resolve against opencode's working directory. `~` is not expanded, and the parent directory must already exist).
@@ -222,7 +269,10 @@ src/
   cache.ts       — SessionApprovalCache for repeated approvals
   context.ts     — Normalize permission events, collect user messages
   diagnostics.ts — JSONL decision logging
+  diagnostics-sum.ts — Pure aggregator for diagnostics JSONL (tokens/USD/per-day/per-session)
   resume.ts      — Build continuation messages on denial
+scripts/
+  sum-diagnostics.ts — CLI wrapper that sums a diagnostics JSONL file
 ```
 
 ## Development
@@ -231,12 +281,12 @@ Prerequisites: [Bun](https://bun.sh) (runs tests + typecheck) and Node ≥ 22 (p
 
 ```bash
 bun install           # one-time setup after cloning
-bun test              # 237 tests
+bun test              # 257 tests
 bun test --watch      # iterate
 bun run check         # tsc --noEmit
 ```
 
-Integration tests hit the real System One API only when `TYPESAFE_API_KEY` is set to an `apikey_`-prefixed key; otherwise they early-return as vacuous passes (an OpenRouter `sk-or-` key is not `apikey_`-prefixed, so it does not run them).
+Integration tests hit the real System One API only when `TYPESAFE_API_KEY` is set to an `apikey_`-prefixed key; otherwise they early-return as vacuous passes (an OpenRouter `sk-or-` key is not `apikey_`-prefixed, so it does not run them). With a key set, the integration run prints the measured per-call `usage`/`cost` returned by the provider; if the live API omits those fields the test warns instead of failing.
 
 ## Publishing
 

@@ -14,6 +14,16 @@ function skipIfNoKey() {
   return !hasApiKey
 }
 
+function numericFields(value: unknown): Record<string, number> | undefined {
+  if (typeof value === "number" && isFinite(value)) return { value }
+  if (value === null || typeof value !== "object") return undefined
+  const out: Record<string, number> = {}
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof entry === "number" && isFinite(entry)) out[key] = entry
+  }
+  return Object.keys(out).length > 0 ? out : undefined
+}
+
 const config = parseConfig({
   systemOneApiKey: apiKey,
   systemOneModel: "jev-latest",
@@ -177,4 +187,21 @@ describe("rateCommand (integration)", () => {
     })
     await expect(rateCommand("ls", [], badConfig)).rejects.toThrow(/System One API error/)
   }, 10_000)
+
+  test("prints per-call usage/cost from the live System One API (soft-assert)", async () => {
+    if (skipIfNoKey()) return
+
+    let sawAny = false
+    for (const cmd of ["ls", "git status", "echo hello"]) {
+      const result = await rateCommand(cmd, [], config)
+      const usage = numericFields(result.usage)
+      const cost = numericFields(result.cost)
+      if (usage || cost) sawAny = true
+      console.log(`  usage/cost [${cmd}] ${JSON.stringify({ usage: usage ?? null, cost: cost ?? null })}`)
+    }
+
+    if (!sawAny) {
+      console.warn("  ⚠ live System One API returned no usage/cost fields (schema not guaranteed); continuing")
+    }
+  }, 30_000)
 })

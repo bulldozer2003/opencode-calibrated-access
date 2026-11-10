@@ -11,6 +11,8 @@ type SignalEntry = { probability: number; confidence: number }
 interface SystemOneResponse {
   model: string
   answers: Partial<Record<SignalName, { type: string; score: number; confidence: number }>>
+  usage?: unknown
+  cost?: unknown
 }
 
 interface OpenAIResponse {
@@ -19,6 +21,8 @@ interface OpenAIResponse {
       content: string | null
     }
   }>
+  usage?: unknown
+  cost?: unknown
 }
 
 const OPENAI_BASE_HOSTS = ["api.openai.com"]
@@ -103,9 +107,16 @@ async function rateCommandSystemOne(
     }
 
     const data = (await response.json()) as SystemOneResponse
-    return { signals: parseSystemOneScores(data) }
+    return { signals: parseSystemOneScores(data), ...usageCost(data) }
   } finally {
     clearTimeout(timer)
+  }
+}
+
+function usageCost(data: { usage?: unknown; cost?: unknown }): Pick<SignalScores, "usage" | "cost"> {
+  return {
+    ...(data.usage !== undefined ? { usage: data.usage } : {}),
+    ...(data.cost !== undefined ? { cost: data.cost } : {}),
   }
 }
 
@@ -212,7 +223,7 @@ ${schema}
       throw new Error("OpenAI-compatible API returned empty response")
     }
 
-    return { signals: parseOpenAIResponse(content) }
+    return { signals: parseOpenAIResponse(content), ...usageCost(data) }
   } finally {
     clearTimeout(timer)
   }

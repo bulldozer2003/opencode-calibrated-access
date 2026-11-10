@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Diagnostics `decision` events from a model review now carry the API's `usage`/`cost` fields (when present) alongside the signal map, turning the shadow-mode JSONL log into a spend ledger. Policy- and session-sourced decisions carry neither — no model call was made.
+- New `scripts/sum-diagnostics.ts` (`bun run scripts/sum-diagnostics.ts <diagnostics.jsonl>`) plus pure aggregator `src/diagnostics-sum.ts`: totals decision events, model-reviewed count, input/output tokens, and USD — measured from the provider's `cost` when present, otherwise estimated at the published Jev input rate ($0.042/M) — with per-day and per-session breakdowns. Tolerates both token key shapes (`input_tokens`/`output_tokens` and `prompt_tokens`/`completion_tokens`), `cost: null`, and malformed lines (skipped and counted). Zero new dependencies.
+- Docs: new README "Measure your actual spend" section with script usage and sample output; 257 tests (was 242).
+- Capture optional `usage`/`cost` fields returned by the System One (`/systemone`) and chat-completions APIs and pass them through on `SignalScores` (`usage`/`cost`). Both are optional and never required — a live call is unaffected when the provider omits them.
+- Integration test now prints the measured per-call `usage`/`cost` (soft-assert: warns if the live API returns none, never fails).
+- Docs: README "Cost" section with per-rating and per-1,000 estimates for Options A/B (Jev) and C (gpt-4o-mini).
+
 ## 0.4.1 — 2026-11-10
 
 - Fix: plugin failed to load in opencode v1.19 (`undefined is not an object (evaluating 'options.mode')`) — the entry point now uses the legacy `(input, options)` call shape and exports exactly one function, since opencode invokes every runtime export.

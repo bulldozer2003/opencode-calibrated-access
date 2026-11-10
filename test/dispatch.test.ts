@@ -141,6 +141,55 @@ async function runWithDiagnostics(mode: "shadow" | "enforce", fetchFn: FetchFn):
   return { harness, decision }
 }
 
+async function runCommandWithDiagnostics(
+  mode: "shadow" | "enforce",
+  command: string,
+  fetchFn: FetchFn,
+  messages: unknown[] = [],
+): Promise<{ harness: Harness; decision: Record<string, unknown> }> {
+  const path = `/tmp/calibrated-access-dispatch-${crypto.randomUUID()}.jsonl`
+  const harness = makeHarness(messages)
+  const config = parseConfig({ provider: "typesafe", systemOneApiKey: "sk-test", mode, diagnosticsPath: path })
+  await reviewAndReply(
+    harness.context,
+    harness.client,
+    config,
+    { ...request, resources: [command] },
+    new SessionApprovalCache(),
+    performance.now(),
+    new AbortController().signal,
+    fetchFn,
+  )
+  const decision = JSON.parse(readFileSync(path, "utf-8").trim().split("\n").pop()!)
+  unlinkSync(path)
+  return { harness, decision }
+}
+
+describe("dispatch — diagnostics usage/cost", () => {
+  test("records the model's usage and cost on the decision event", async () => {
+    const response = { ...systemOneBody(), usage: { input_tokens: 878, output_tokens: 125 }, cost: null }
+    const { decision } = await runWithDiagnostics("shadow", okFetch(response))
+    expect(decision.event).toBe("decision")
+    expect(decision.source).toBe("typesafe")
+    expect((decision.usage as Record<string, unknown>).input_tokens).toBe(878)
+    expect((decision.usage as Record<string, unknown>).output_tokens).toBe(125)
+    expect(decision.cost).toBeNull()
+  })
+
+  test("omits usage/cost when the model call returns none", async () => {
+    const { decision } = await runWithDiagnostics("shadow", okFetch(systemOneBody()))
+    expect("usage" in decision).toBe(false)
+    expect("cost" in decision).toBe(false)
+  })
+
+  test("does not add usage/cost to a policy-sourced decision", async () => {
+    const { decision } = await runCommandWithDiagnostics("shadow", "git status", okFetch(systemOneBody()))
+    expect(decision.source).toBe("policy")
+    expect("usage" in decision).toBe(false)
+    expect("cost" in decision).toBe(false)
+  })
+})
+
 describe("dispatch — enforce mode", () => {
   test("blocks when a signal meets the block threshold", async () => {
     const { replies } = await run("enforce", okFetch(systemOneBody({ destructive: { score: 4, confidence: 0.9 } })))
