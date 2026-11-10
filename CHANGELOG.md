@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.1 — 2026-11-10
+
+- Fix: plugin failed to load in opencode v1.19 (`undefined is not an object (evaluating 'options.mode')`) — the entry point now uses the legacy `(input, options)` call shape and exports exactly one function, since opencode invokes every runtime export.
+- Fix: events are consumed from opencode's hook-based delivery (`hooks.event`) through a local event registry, replacing the removed `data.on` bus; `dispose` unsubscribes and aborts in-flight reviews.
+- Fix: `permission.asked` normalization accepts the 1.19 payload shape (`permission` → action, `patterns` → resources); v2 shapes untouched.
+- Fix: `session.message.list` widened to async to match the 1.19 SDK.
+- 237 tests (was 227).
+
 ## 0.4.0 — 2026-11-06
 
 - New deterministic secret-exposure detection (`detectSecretExposure`): blocks commands that would print, redirect, or transmit secrets — `echo $API_KEY`, `printenv GITHUB_TOKEN`, `env > creds.txt`, `printenv | curl`, `curl` auth headers/queries with `$VAR` secrets, git URLs with inline credentials, and secret vars piped or redirected. Detection is conservative: prose words like "token", flag names, and non-secret contexts (`grep token`, `ssh-keygen`, `printenv PATH`, `env | grep TERM`) are not blocked.
