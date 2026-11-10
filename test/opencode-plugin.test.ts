@@ -120,7 +120,7 @@ describe("CalibratedAccessPlugin", () => {
     })
     const hooks = await CalibratedAccessPlugin({ client }, {})
     await hooks.event({ event: asked("per_4", "touch /tmp/example") })
-    expect(client.sessionMessagesCalls).toEqual(["sess1"])
+    expect(client.sessionMessagesCalls[0]).toBe("sess1")
     expect(client.replies[0]!.body.response).toBe("reject")
     expect(client.replies[0]!.body.message).toContain("prohibit")
     await hooks.dispose()

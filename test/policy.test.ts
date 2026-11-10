@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { applyDeterministicPolicy, detectSecretExposure } from "../src/policy.ts"
+import { applyDeterministicPolicy, detectSecretExposure, fastDeny } from "../src/policy.ts"
 import type { ReviewInput } from "../src/types.ts"
 
 function input(command: string): ReviewInput {
@@ -107,6 +107,35 @@ describe("applyDeterministicPolicy", () => {
         context: { rootSessionID: "ses_root", userMessages: ["I explicitly prohibit access to /tmp/"] },
       })?.reasonCode,
     ).toBe("explicit_user_prohibition")
+  })
+})
+
+describe("fastDeny", () => {
+  test("hits secret_exposure for the canonical .env read", () => {
+    const decision = fastDeny({ action: "bash", resources: ["cat .env"] })
+    expect(decision?.kind).toBe("deny")
+    expect(decision?.reasonCode).toBe("secret_exposure")
+    expect(decision?.alternatives?.length).toBeGreaterThanOrEqual(3)
+  })
+
+  test("hits catastrophic_delete for the canonical rm-rf patterns", () => {
+    for (const command of ["rm -rf /", "sudo rm -rf /", "rm -rf ~", "rm -rf $HOME"]) {
+      expect(fastDeny({ action: "bash", resources: [command] })?.reasonCode).toBe("catastrophic_delete")
+    }
+  })
+
+  test("returns null for routine allows (allow codes are context-free but never fast-denied)", () => {
+    for (const command of ["git status", "bun test", "npm run lint"]) {
+      expect(fastDeny({ action: "bash", resources: [command] })).toBeNull()
+    }
+  })
+
+  test("returns null for commands whose only code needs context", () => {
+    expect(fastDeny({ action: "bash", resources: ["touch /tmp/example"] })).toBeNull()
+  })
+
+  test("returns null for non-bash actions", () => {
+    expect(fastDeny({ action: "external_directory", resources: ["/home/user/.ssh/*"] })).toBeNull()
   })
 })
 

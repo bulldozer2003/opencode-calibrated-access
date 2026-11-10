@@ -136,6 +136,8 @@ Every permission request goes through three gates:
 
 **1. Deterministic policy** — rules with no model involvement. Blocks catastrophic deletes (`rm -rf /`, `rm -rf ~`). Blocks commands that would expose secrets (see [Deterministic secret-exposure blocking](#deterministic-secret-exposure-blocking)). Allows known-safe routine commands (`git status`, `npm test`, `cargo build`, `pytest`). Also blocks commands the user explicitly prohibited in recent messages.
 
+The two context-free deny rules — `catastrophic_delete` and `secret_exposure` — are evaluated **before any session context is fetched** (`fastDeny`). Deterministic blocks therefore reply within a single event-loop tick, with no `session.root`/`session.messages` round-trips before the reply. This both removes 2–3 round-trips of latency from every deterministic block in normal TUI use and reliably beats opencode's headless auto-reject in unattended `opencode run` mode. After the reply, the fire-and-forget resume path makes one lazy `session.messages` call to derive agent/model/variant routing for the continuation. Allow codes and the context-dependent prohibition scan are deliberately **not** fast-pathable: a prohibited routine command must never be fast-allowed, and the full policy pass still runs for everything `fastDeny` does not catch.
+
 **2. Session approval cache** — if the plugin itself previously allowed an exact action+pattern combination in this session (it caches its own `always`-scoped allow decisions), it's reused without re-review. User approvals made through opencode's UI do not populate this cache.
 
 **3. Model review** — for everything else, a model scores the request on eight independent safety signals. Set `provider` to `"typesafe"` (default; Jev-aligned System One models using the `/systemone` protocol) or `"openai-compatible"` (a chat-completions fallback for general LLMs — see the caveat above; scores are less calibrated):
@@ -180,6 +182,26 @@ Per-signal thresholds decide the outcome:
 4. Flip `"mode"` to `"enforce"`.
 
 The default mode is `"enforce"`.
+
+Denials also write a `resume` event to the same JSONL. After a deny or reviewer failure the plugin re-prompts the session so the agent continues without you typing "Continue"; the event records whether that prompt succeeded (`ok: true`) and on which attempt.
+
+opencode is multi-project, so every session-scoped SDK call the resume path makes is **directory-scoped**: the plugin threads the host's `input.directory` through to `session.get`, `session.messages`, `session.status`, and `session.promptAsync`/`session.prompt` as `query: { directory }` (omitted entirely on older hosts that don't supply one). Without scoping, `session.status` returns another project's session map, so the session looks absent — which now reads as idle and lets the continuation fire too early. With scoping, the probe history shows genuine `busy` → `idle` transitions and the continuation lands in the owning project.
+
+Before each prompt attempt the plugin polls `session.status` every 250 ms for up to 10 s until the rejected turn has finished tearing down (opencode silently drops prompts submitted against a busy session). Every poll is logged as its own `resume_probe` event — `{ "event": "resume_probe", "sessionID", "attempt", "result": "busy" | "idle" | "absent" | "error", "error"? }` — so the exact status history is visible. `session.status` only lists **active** sessions, so a missing session entry means idle: an `absent` result is logged and then treated as idle, prompting immediately (`waitMs` ~0). A `busy` session keeps polling, and an errored status call — genuinely unknown, not idle — is retried within the budget. The wait only gives up at the timeout, and a successful event carries `waitMs` (total idle-wait time) plus `failOpen: true` when the prompt was attempted despite never observing idle (a `busy` or `error` timeout; an `absent` result never fail-opens). A client with no `session.status` method is treated as idle immediately.
+
+After the prompt returns, the plugin verifies execution by polling `session.messages` (directory-scoped) for up to 2 s for the injected continuation message itself (a user message starting with `[Calibrated Access]`): if it appears, the prompt landed and a turn is queued/running, and the event carries `started: true`; if the message list is fetchable but never contains it, `started: false` with `note: "prompt accepted but no turn started"` — the smoking gun for an accepted-but-dropped prompt. `started` is informational and never fails a resume; when the message list cannot be fetched it is omitted entirely rather than reported as `false`.
+
+The continuation prompt is routed like a normal user turn. The plugin reverse-scans the fetched messages for the latest **user** message (the real routing carrier — assistant messages don't hold it) and spreads its `agent`, `model` (`{ providerID, modelID }`), and `variant` into the prompt body; synthetic `[Calibrated Access]` continuations are skipped so a prior resume can't re-route itself. If no user message yields routing, it falls back to the round-2 behaviour of using the last assistant `agent`. The `resume` event logs the applied routing as `routing: { agent?, model?, variant? }` (names/ids only — never message content). Deterministic fast-denies use the same precedence: the reply goes out first (preserving the auto-reject race win), then a single lazy `session.messages` fetch derives routing inside the fire-and-forget resume path, so a blocked planner turn stays on the planner even when the block never touched the model.
+
+A prompt that resolves with an SDK `error` is retried once after a 750 ms delay and logged with `ok: false` plus a sanitized error detail (the error object, `JSON.stringify`ed, or `name: message` for a thrown `Error`, capped at 500 chars) — a hidden SDK failure never reaches the `catch`, since the opencode SDK resolves to `{ data, error }` rather than throwing by default. If you see `ok: false` in real traffic, that error detail is the actual opencode error, and the retry/delay/wait bounds can be tuned against it.
+
+To verify the whole path end-to-end, run the user-run harness (not part of `bun test`/CI) from a normal terminal — never from inside an opencode session:
+
+```bash
+bash scripts/e2e-resume-check.sh
+```
+
+It creates a temp dir with a fake `.env`, starts a long-lived `opencode serve` in the background (on a free port, health-polled until ready), attaches one `opencode run --attach` asking the agent to print that `.env` (a deterministic secret-exposure block), waits ~12 s after the client exits for the server-side resume loop, then greps the diagnostics JSONL for `resume_probe`/`resume` events. The serve+attach shape is required because the resume loop lives in the server and dies with a short-lived `opencode run` process. **PASS requires the newest `resume` event to have `ok: true` AND a `routing` object carrying an agent**; the `started` field is printed on its own `STARTED:true|false|null` line but is informational, not part of PASS. See the header of [`scripts/e2e-resume-check.sh`](./scripts/e2e-resume-check.sh) for env overrides (`CALIBRATED_PLUGIN`, `CALIBRATED_MODEL`, `KEEP_TMP`). With `fastDeny` the plugin replies before auto-reject can win, so the expected trace now reliably reaches `request_received` → `decision` (source `policy`, `secret_exposure`) → probe/`resume` events with `waitMs` ~0. A fast-deny sends its reply immediately, then derives routing from one lazy `session.messages` call inside the fire-and-forget resume path, so the deterministic-block case now also populates `routing.agent` and satisfies the script's gate without reintroducing the race.
 
 ### Deterministic secret-exposure blocking
 
@@ -272,7 +294,8 @@ src/
   diagnostics-sum.ts — Pure aggregator for diagnostics JSONL (tokens/USD/per-day/per-session)
   resume.ts      — Build continuation messages on denial
 scripts/
-  sum-diagnostics.ts — CLI wrapper that sums a diagnostics JSONL file
+  sum-diagnostics.ts    — CLI wrapper that sums a diagnostics JSONL file
+  e2e-resume-check.sh   — user-run end-to-end check for resume-after-denial (not in CI)
 ```
 
 ## Development
@@ -281,7 +304,7 @@ Prerequisites: [Bun](https://bun.sh) (runs tests + typecheck) and Node ≥ 22 (p
 
 ```bash
 bun install           # one-time setup after cloning
-bun test              # 257 tests
+bun test              # 309 tests
 bun test --watch      # iterate
 bun run check         # tsc --noEmit
 ```

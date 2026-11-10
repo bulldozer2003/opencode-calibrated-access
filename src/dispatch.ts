@@ -1,11 +1,11 @@
-import type { CalibratedConfig, Decision, PermissionRequest, ReviewerClient, RuntimeContext, SignalScores } from "./types.ts"
-import { applyDeterministicPolicy } from "./policy.ts"
+import type { CalibratedConfig, Decision, PermissionRequest, ResumeRouting, ReviewerClient, RuntimeContext, SignalScores } from "./types.ts"
+import { applyDeterministicPolicy, fastDeny } from "./policy.ts"
 import { assessSignals } from "./matrix.ts"
 import { rateCommand, type FetchFn } from "./risk-rater.ts"
 import { SessionApprovalCache } from "./cache.ts"
 import { buildContinuationMessage } from "./resume.ts"
 import { writeDiagnostic } from "./diagnostics.ts"
-import { collectUserMessages, isPluginContinuation } from "./context.ts"
+import { collectUserMessages, isPluginContinuation, lastAssistantAgent, latestUserRouting } from "./context.ts"
 import { alternativesFor, alternativesSection } from "./alternatives.ts"
 
 const ALWAYS_ENFORCED_POLICY_CODES = new Set(["catastrophic_delete", "explicit_user_prohibition"])
@@ -20,11 +20,46 @@ export async function reviewAndReply(
   signal: AbortSignal,
   fetchFn?: FetchFn,
 ): Promise<void> {
+  let routing: ResumeRouting = {}
   try {
+    const fast = fastDeny({ action: request.action, resources: [...request.resources] })
+    if (fast) {
+      const shadowFast =
+        config.mode === "shadow" && !ALWAYS_ENFORCED_POLICY_CODES.has(fast.reasonCode)
+          ? { kind: "allow" as const, reasonCode: `shadow_${fast.reasonCode}`, reason: fast.reason }
+          : undefined
+      const effectiveFast = shadowFast ?? fast
+      if (shadowFast) {
+        context.showToast?.({
+          title: "Shadow mode",
+          message: `Shadow mode: would have blocked (${fast.reasonCode})`,
+          variant: "info",
+          duration: 5_000,
+        })
+      }
+      writeDiag(config, request, startedAt, effectiveFast, "policy", undefined)
+      if (effectiveFast.kind === "allow") {
+        await client.reply({ sessionID: request.sessionID, requestID: request.id, reply: "once", protocol: request.protocol })
+      } else {
+        await client.reply({
+          sessionID: request.sessionID,
+          requestID: request.id,
+          reply: "reject",
+          message: `Calibrated Access blocked this action: ${effectiveFast.reason}${alternativesSection(effectiveFast.alternatives)}`,
+          protocol: request.protocol,
+        })
+        context.showToast?.({ title: "Blocked", message: effectiveFast.reason, variant: "warning", duration: 4_000 })
+        routing = resolveRouting(await listMessages(context, request.sessionID))
+        context.resumeAfterDenial?.(request.sessionID, buildContinuationMessage(effectiveFast.reason, request.resources, effectiveFast.alternatives), routing)
+      }
+      return
+    }
+
     const rootSessionID = await resolveRootSessionID(context, request.sessionID)
     if (signal.aborted || !rootSessionID) return
 
     const rawMessages = await listMessages(context, rootSessionID)
+    routing = resolveRouting(rawMessages)
     const messages = collectUserMessages(rawMessages, config.contextMessageCount)
     const reviewInput = {
       request: {
@@ -89,7 +124,7 @@ export async function reviewAndReply(
         protocol: request.protocol,
       })
       context.showToast?.({ title: "Blocked", message: decision.reason, variant: "warning", duration: 4_000 })
-      context.resumeAfterDenial?.(request.sessionID, buildContinuationMessage(decision.reason, request.resources, decision.alternatives))
+      context.resumeAfterDenial?.(request.sessionID, buildContinuationMessage(decision.reason, request.resources, decision.alternatives), routing)
     }
   } catch (error) {
     if (signal.aborted) return
@@ -107,7 +142,7 @@ export async function reviewAndReply(
       message: "Calibrated Access failed to review this action; blocked by default.",
       protocol: request.protocol,
     }).catch(() => {})
-    context.resumeAfterDenial?.(request.sessionID, "Permission review failed; continue with a lower-risk step.")
+    context.resumeAfterDenial?.(request.sessionID, "Permission review failed; continue with a lower-risk step.", routing)
   }
 }
 
@@ -245,6 +280,13 @@ async function listMessages(context: RuntimeContext, sessionID: string): Promise
   } catch {
     return []
   }
+}
+
+function resolveRouting(messages: unknown[]): ResumeRouting {
+  const userRouting = latestUserRouting(messages)
+  if (userRouting.agent || userRouting.model || userRouting.variant) return userRouting
+  const agent = lastAssistantAgent(messages)
+  return agent ? { agent } : {}
 }
 
 function detectRetryAfterDenial(messages: unknown[]): boolean {
