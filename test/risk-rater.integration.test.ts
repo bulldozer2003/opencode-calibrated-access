@@ -169,10 +169,12 @@ describe("rateCommand (integration)", () => {
   }, 20_000)
 
   test("rejects invalid API key", async () => {
+    if (skipIfNoKey()) return
+
     const badConfig = parseConfig({
       systemOneApiKey: "apikey_bad",
       systemOneModel: "jev-latest",
     })
-    expect(rateCommand("ls", [], badConfig)).rejects.toThrow(/System One API error/)
+    await expect(rateCommand("ls", [], badConfig)).rejects.toThrow(/System One API error/)
   }, 10_000)
 })

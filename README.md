@@ -235,7 +235,7 @@ bun test --watch      # iterate
 bun run check         # tsc --noEmit
 ```
 
-Integration tests hit the real System One API only when `TYPESAFE_API_KEY` is set to an `apikey_`-prefixed key; otherwise they early-return as vacuous passes (an OpenRouter `sk-or-` key is not `apikey_`-prefixed, so it does not run them) — except one ungated test that always probes the real endpoint with an invalid key.
+Integration tests hit the real System One API only when `TYPESAFE_API_KEY` is set to an `apikey_`-prefixed key; otherwise they early-return as vacuous passes (an OpenRouter `sk-or-` key is not `apikey_`-prefixed, so it does not run them).
 
 ## Publishing
 

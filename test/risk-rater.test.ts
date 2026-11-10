@@ -107,12 +107,12 @@ describe("rateCommand", () => {
   })
 
   test("throws on API error", async () => {
-    expect(rateCommand("rm -rf /", [], testConfig, false, errorFetch(401, "invalid key"))).rejects.toThrow(/System One API error/)
+    await expect(rateCommand("rm -rf /", [], testConfig, false, errorFetch(401, "invalid key"))).rejects.toThrow(/System One API error/)
   })
 
   test("throws on missing System One API key", async () => {
     const config = { ...testConfig, systemOneApiKey: undefined }
-    expect(rateCommand("ls", [], config)).rejects.toThrow(/System One API key/)
+    await expect(rateCommand("ls", [], config)).rejects.toThrow(/System One API key/)
   })
 
   test("sends request to {systemOneBaseUrl}/systemone endpoint", async () => {
@@ -188,7 +188,7 @@ describe("rateCommand (openai-compatible provider)", () => {
     expect(result.signals.destructive.confidence).toBeCloseTo(0.8, 1)
   })
 
-  test("sends all seven signals in the system prompt", async () => {
+  test("sends every signal in the system prompt", async () => {
     let sentUrl = ""
     let sentBody: unknown = null
     const fetch: FetchFn = async (url, opts) => {
@@ -231,12 +231,12 @@ describe("rateCommand (openai-compatible provider)", () => {
   })
 
   test("throws on API error from openai endpoint", async () => {
-    expect(rateCommand("ls", [], openAIConfig, false, openAIErrorFetch(401, "invalid key"))).rejects.toThrow(/OpenAI-compatible API error/)
+    await expect(rateCommand("ls", [], openAIConfig, false, openAIErrorFetch(401, "invalid key"))).rejects.toThrow(/OpenAI-compatible API error/)
   })
 
   test("throws on missing openai API key", async () => {
     const config = { ...openAIConfig, openaiApiKey: undefined }
-    expect(rateCommand("ls", [], config)).rejects.toThrow(/OPENAI_API_KEY/)
+    await expect(rateCommand("ls", [], config)).rejects.toThrow(/OPENAI_API_KEY/)
   })
 
   test("parses and clamps scores from openai response", async () => {
@@ -287,7 +287,7 @@ describe("rateCommand (openai-compatible provider)", () => {
       ok: true,
       json: async () => ({ choices: [] }),
     }) as any
-    expect(rateCommand("ls", [], openAIConfig, false, fetch)).rejects.toThrow(/empty response/)
+    await expect(rateCommand("ls", [], openAIConfig, false, fetch)).rejects.toThrow(/empty response/)
   })
 
   test("throws on null content in response", async () => {
@@ -295,7 +295,7 @@ describe("rateCommand (openai-compatible provider)", () => {
       ok: true,
       json: async () => ({ choices: [{ message: { content: null } }] }),
     }) as any
-    expect(rateCommand("ls", [], openAIConfig, false, fetch)).rejects.toThrow(/empty response/)
+    await expect(rateCommand("ls", [], openAIConfig, false, fetch)).rejects.toThrow(/empty response/)
   })
 
   test("throws on non-JSON content", async () => {
@@ -303,7 +303,7 @@ describe("rateCommand (openai-compatible provider)", () => {
       ok: true,
       json: async () => ({ choices: [{ message: { content: "not json at all" } }] }),
     }) as any
-    expect(rateCommand("ls", [], openAIConfig, false, fetch)).rejects.toThrow(/invalid JSON/)
+    await expect(rateCommand("ls", [], openAIConfig, false, fetch)).rejects.toThrow(/invalid JSON/)
   })
 
   test("sanitizes API keys from error messages", async () => {
