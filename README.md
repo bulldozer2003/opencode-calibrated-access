@@ -1,15 +1,15 @@
 # opencode-calibrated-access
 
-OpenCode plugin that rates command safety with seven calibrated safety signals, per-signal block/ask thresholds, and a shadow mode for tuning thresholds on real traffic. Scoring is model-driven: the default backend is [TypeSafe AI](https://docs.typesafe.ai) System One (Jev and friends), with an OpenAI-compatible chat fallback for general LLMs.
+OpenCode plugin that rates command safety with eight calibrated safety signals, per-signal block/ask thresholds, and a shadow mode for tuning thresholds on real traffic. Scoring is model-driven: the default backend is [TypeSafe AI](https://docs.typesafe.ai) System One (Jev and friends), with an OpenAI-compatible chat fallback for general LLMs.
 
 ## Installation
 
 ```bash
-# From npm (once published)
-npm install opencode-calibrated-access
+# From GitHub (works today)
+npm install git+https://github.com/bulldozer2003/opencode-calibrated-access.git
 
-# Or directly from GitHub
-npm install git+https://github.com/YOUR_USER/opencode-calibrated-access.git
+# From npm (after first publish — remove this note when it lands)
+npm install opencode-calibrated-access
 ```
 
 Then add it to your `opencode.jsonc`:
@@ -37,17 +37,61 @@ Then add it to your `opencode.jsonc`:
 
 The System One API key lives directly in the plugin options. A `TYPESAFE_API_KEY` environment variable is also accepted as a fallback, but the plugin config is the intended path.
 
-**You need a [TypeSafe AI](https://docs.typesafe.ai) account** (or another System One-compatible endpoint) to use the default `"typesafe"` provider. For the `"openai-compatible"` provider, use any compatible chat API / `OPENAI_API_KEY`.
+Scoring needs a System One model. Three ways to get one — see [Provider Options](#provider-options): a [TypeSafe AI](https://docs.typesafe.ai) account, your existing OpenRouter key, or (last resort) any OpenAI-compatible chat model.
+
+## Provider Options
+
+**Have an OpenRouter key? Use Option B — no new account needed.**
+
+### Option A — TypeSafe (default)
+
+Zero config beyond `systemOneApiKey` (`apikey_...`). The default base URL (`https://api.typesafe.ai/v1`) and model (`jev-latest`) are used automatically.
+
+### Option B — existing OpenRouter account
+
+```jsonc
+{
+  "permission": { "bash": "ask" },
+  "plugin": [
+    [
+      "opencode-calibrated-access",
+      {
+        "provider": "typesafe",
+        "systemOneApiKey": "sk-or-...",            // your existing OpenRouter key
+        "systemOneBaseUrl": "https://openrouter.ai/api/v1",
+        "systemOneModel": "typesafe/jev-1.14",
+        "mode": "shadow"
+      }
+    ]
+  ]
+}
+```
+
+This uses the same `/systemone` protocol as TypeSafe, so scores are Jev-aligned — this is **not** the degraded fallback. Local System One-compatible servers work the same way; see the base-URL table in [`opencode.jsonc.example`](./opencode.jsonc.example) (server names there are illustrative).
+
+### Option C — `openai-compatible` fallback (last resort)
+
+See the [Installation caveat](#installation) for why this is a last resort.
+
+> **Naming trap:** Despite the name, OpenRouter users should **NOT** choose this provider — OpenRouter speaks the System One protocol natively (Option B). This option is only for plain chat-completions endpoints with no System One model at all.
+
+## Verify your setup
+
+1. Start in `"mode": "shadow"` with a `diagnosticsPath` set (e.g. `/home/you/.opencode/calibrated-access.jsonl` — use an absolute path; relative paths resolve against opencode's working directory. `~` is not expanded, and the parent directory must already exist).
+2. Restart opencode, then ask the agent to run any benign command (`ls`).
+3. Working = a `decision` event lands in the JSONL file (in shadow mode, toasts only appear for commands the plugin would have blocked or escalated — a benign `ls` scores allow, so expect the JSONL event, not a toast).
+4. Nothing happened? Two causes: `permission.bash` is not `"ask"` — the plugin only sees permission requests (re-read the warning in Installation) — or the plugin died at startup from an unusable `diagnosticsPath` (a `~` path is not expanded, and a missing parent directory aborts startup — see step 1).
+5. Once satisfied, flip `"mode"` to `"enforce"` (see the Shadow mode onboarding flow in How It Works for the full tuning sequence).
 
 ## How It Works
 
 Every permission request goes through three gates:
 
-**1. Deterministic policy** — rules with no model involvement. Blocks catastrophic deletes (`rm -rf /`, `rm -rf ~`). Blocks commands that would expose secrets (see [Deterministic secret-exposure blocking](#deterministic-secret-exposure-blocking)). Allows known-safe routine commands (`git status`, `npm test`, `cargo build`, `pytest`). Also blocks commands the user explicitly prohibited in their last message.
+**1. Deterministic policy** — rules with no model involvement. Blocks catastrophic deletes (`rm -rf /`, `rm -rf ~`). Blocks commands that would expose secrets (see [Deterministic secret-exposure blocking](#deterministic-secret-exposure-blocking)). Allows known-safe routine commands (`git status`, `npm test`, `cargo build`, `pytest`). Also blocks commands the user explicitly prohibited in recent messages.
 
-**2. Session approval cache** — if the user previously approved an exact action+pattern combination in this session, it's reused without re-review.
+**2. Session approval cache** — if the plugin itself previously allowed an exact action+pattern combination in this session (it caches its own `always`-scoped allow decisions), it's reused without re-review. User approvals made through opencode's UI do not populate this cache.
 
-**3. Model review** — for everything else, a model scores the request on seven independent safety signals. Set `provider` to `"typesafe"` (default; Jev-aligned System One models using the `/systemone` protocol) or `"openai-compatible"` (a chat-completions fallback for general LLMs — see the caveat above; scores are less calibrated):
+**3. Model review** — for everything else, a model scores the request on eight independent safety signals. Set `provider` to `"typesafe"` (default; Jev-aligned System One models using the `/systemone` protocol) or `"openai-compatible"` (a chat-completions fallback for general LLMs — see the caveat above; scores are less calibrated):
 
 | Signal | What it measures |
 |--------|------------------|
@@ -57,6 +101,7 @@ Every permission request goes through three gates:
 | `prompt_injection` | Is this carrying out instructions from fetched content? |
 | `scope_creep` | Is this unrelated to the user's stated goal? |
 | `user_requested` | Did the user explicitly ask for this exact action? |
+| `user_prohibited` | Did the user explicitly or implicitly forbid this action in the conversation (prohibitions, exclusions, refusals, off-limits areas)? |
 | `severity` | How bad is the worst plausible outcome? |
 
 Each signal is scored 0–4 (0 = definitely not, 4 = definitely yes) with a confidence 0–1. Scores are normalized to probabilities (`score / 4`). A signal is only considered when its confidence is at least `0.5`.
@@ -70,6 +115,7 @@ Per-signal thresholds decide the outcome:
 | `exfiltration` | 0.7 | 0.5 |
 | `prompt_injection` | 0.7 | 0.5 |
 | `scope_creep` | 0.8 | 0.6 |
+| `user_prohibited` | 0.7 | 0.5 |
 | `severity` | 0.85 | 0.6 |
 
 - No risk signal confident at all (every confidence below `0.5`) → deny with reasonCode `no_confident_signals`; the `user_requested` override cannot rescue it.
@@ -79,7 +125,7 @@ Per-signal thresholds decide the outcome:
 
 ### Shadow mode
 
-`"mode": "shadow"` never blocks on signals. It replies `once` as usual but emits a diagnostic (and an info toast) recording what enforcement *would* have done, including the full signal map. The recommended onboarding flow is:
+`"mode": "shadow"` never blocks on signals. It replies `once` as usual and emits a diagnostic recording what enforcement *would* have done, including the full signal map. An info toast only appears for commands the plugin would have blocked, denied pending confirmation, or been unable to judge — a benign allow emits no toast. The recommended onboarding flow is:
 
 1. Run in `"shadow"` for about a week.
 2. Read the JSONL diagnostics (set `diagnosticsPath`) and see which signals fire on legitimate work.
@@ -126,17 +172,17 @@ In `"shadow"` mode a deterministic secret-exposure deny is logged and allowed th
 | Option | Default | Description |
 |--------|---------|-------------|
 | `provider` | `"typesafe"` | Scoring backend: `"typesafe"` (System One) or `"openai-compatible"` (chat fallback). |
-| `systemOneApiKey` | env `TYPESAFE_API_KEY` | API key for System One (TypeSafe, OpenRouter, local Kev/SemIf, etc.). **Set this in plugin options.** Legacy `typesafeApiKey` also works. |
+| `systemOneApiKey` | env `TYPESAFE_API_KEY` | API key for System One (TypeSafe, OpenRouter, or a local server). **Set this in plugin options.** Legacy `typesafeApiKey` also works. |
 | `systemOneModel` | `"jev-latest"` | System One model name. Legacy `typesafeModel` also works. |
 | `systemOneBaseUrl` | `"https://api.typesafe.ai/v1"` | System One base URL; `/systemone` is appended automatically. |
 | `openaiApiKey` | env `OPENAI_API_KEY` | API key for the `openai-compatible` provider. |
 | `openaiModel` | `"gpt-4o-mini"` | Chat model for the `openai-compatible` provider. |
 | `openaiBaseUrl` | `"https://api.openai.com/v1"` | Base URL for the `openai-compatible` provider; `/chat/completions` is appended. |
-| `mode` | `"enforce"` | `"enforce"` denies on signals; `"shadow"` never blocks and only logs what it would have done. |
-| `signalThresholds` | see table above | Per-signal `{ block, ask }` overrides (0–1, `ask <= block`). Unknown signal names and `user_requested` are rejected. |
+| `mode` | `"enforce"` | `"enforce"` denies on signals; `"shadow"` never blocks except the two always-enforced codes (`catastrophic_delete`, `explicit_user_prohibition`), only logging what it would have done. |
+| `signalThresholds` | see table above | Per-signal `{ block, ask }` overrides (0–1, `ask <= block`). Unknown signal names and `user_requested` are rejected; all risk signals (including `user_prohibited`) accept overrides. |
 | `sessionApprovals` | `true` | Whether to cache approved narrow patterns per session. |
 | `contextMessageCount` | `3` | Recent user messages sent as `userContext` to the model. |
-| `diagnosticsPath` | none | Optional path for JSONL decision log (includes the full signal map in every `decision` event). |
+| `diagnosticsPath` | none | Optional path for JSONL decision log (includes the full signal map in model-reviewed `decision` events). |
 
 ### Threshold overrides
 
@@ -178,13 +224,18 @@ src/
   resume.ts      — Build continuation messages on denial
 ```
 
-## Testing
+## Development
+
+Prerequisites: [Bun](https://bun.sh) (runs tests + typecheck) and Node ≥ 22 (per `engines`).
 
 ```bash
-bun test              # 201 tests
+bun install           # one-time setup after cloning
+bun test              # 227 tests
+bun test --watch      # iterate
+bun run check         # tsc --noEmit
 ```
 
-Integration tests hit the real TypeSafe API using the configured key. They are skipped if no key is available.
+Integration tests hit the real System One API only when `TYPESAFE_API_KEY` is set to an `apikey_`-prefixed key; otherwise they early-return as vacuous passes (an OpenRouter `sk-or-` key is not `apikey_`-prefixed, so it does not run them) — except one ungated test that always probes the real endpoint with an invalid key.
 
 ## Publishing
 
