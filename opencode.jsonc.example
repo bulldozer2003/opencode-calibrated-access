@@ -7,9 +7,9 @@
     [
       "opencode-calibrated-access",
       {
-        // ── Provider 1: System One (Jev / Kev / SemIf / Von etc.) ──────────
+        // ── Provider 1: System One (Jev and compatible servers) ────────────
         // Default provider. Speaks the /v1/systemone protocol used by
-        // TypeSafe, OpenRouter, Kev, SemIf, NanoJev, Von, and others.
+        // TypeSafe, OpenRouter, and other System One-compatible servers.
         // Backward-compat: "typesafeApiKey" and "typesafeModel" also work
         // and map to systemOneApiKey / systemOneModel.
 
@@ -31,7 +31,7 @@
         // "openaiBaseUrl": "https://api.openai.com/v1",
 
         // ── Common options ───────────────────────────────────────────
-        "mode": "enforce",                 // "enforce" (default) denies on signals; "shadow" logs only, never blocks
+        "mode": "enforce",                 // "enforce" (default) denies on signals; "shadow" logs only (never blocks except the two always-enforced codes)
 
         // Per-signal thresholds (0–1, ask <= block). Omitted signals/fields
         // fall back to the defaults. `user_requested` has no thresholds.
@@ -52,6 +52,8 @@
   ]
 
   // ── System One base URLs by provider ───────────────────────────────
+  // Server names below are illustrative examples, not a list of known
+  // deployments; substitute your own System One-compatible endpoints.
   //
   // TypeSafe native:  https://api.typesafe.ai/v1              (default)
   // OpenRouter Jev:   https://openrouter.ai/api/v1            model: typesafe/jev-1.14
