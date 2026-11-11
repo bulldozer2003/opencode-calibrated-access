@@ -4,10 +4,10 @@ import { assessSignals } from "./matrix.ts"
 import { rateCommand, type FetchFn } from "./risk-rater.ts"
 import { PROMPT_VERSION } from "./prompt.ts"
 import { SessionApprovalCache } from "./cache.ts"
-import { buildContinuationMessage } from "./resume.ts"
+import { buildContinuationMessage, buildDenialMessage } from "./resume.ts"
 import { writeDiagnostic } from "./diagnostics.ts"
-import { collectUserMessages, isPluginContinuation, lastAssistantAgent, latestUserRouting } from "./context.ts"
-import { alternativesFor, alternativesSection } from "./alternatives.ts"
+import { collectUserMessages, extractRetryJustification, isPluginContinuation, lastAssistantAgent, latestUserRouting } from "./context.ts"
+import { alternativesFor } from "./alternatives.ts"
 
 const ALWAYS_ENFORCED_POLICY_CODES = new Set(["catastrophic_delete", "explicit_user_prohibition"])
 
@@ -48,7 +48,7 @@ export async function reviewAndReply(
           sessionID: request.sessionID,
           requestID: request.id,
           reply: "reject",
-          message: `Calibrated Access blocked this action: ${effectiveFast.reason}${alternativesSection(effectiveFast.alternatives)}`,
+          message: buildDenialMessage(effectiveFast.reason, effectiveFast.alternatives),
           protocol: request.protocol,
         })
         context.showToast?.({ title: "Blocked", message: effectiveFast.reason, variant: "warning", duration: 4_000 })
@@ -95,25 +95,39 @@ export async function reviewAndReply(
     }
 
     const isRetry = detectRetryAfterDenial(rawMessages)
+    const justification = isRetry ? extractRetryJustification(rawMessages) : undefined
+    const appealExhausted = isRetry && cache.hasAppeal(rootSessionID, request.action, request.always)
     const cautions = findings.filter((finding) => finding.severity === "caution")
 
     let decision: Decision
     let signals: SignalScores | undefined
-    if (effectivePolicy) {
+    if (appealExhausted) {
+      const reason = "The one appeal for this request was already used; a second retry is blocked outright."
+      if (config.mode === "shadow") {
+        context.showToast?.({ title: "Shadow mode", message: "Shadow mode: would have blocked (appeal_exhausted)", variant: "info", duration: 5_000 })
+        decision = { kind: "allow", reasonCode: "shadow_appeal_exhausted", reason }
+      } else {
+        decision = { kind: "deny", reasonCode: "appeal_exhausted", reason }
+      }
+    } else if (effectivePolicy) {
       decision = effectivePolicy
     } else if (cached) {
       decision = cached
     } else {
-      const model = await modelDecision(context, request, messages, config, isRetry, cautions, fetchFn)
+      const model = await modelDecision(context, request, messages, config, isRetry, cautions, fetchFn, justification)
       decision = model.decision
       signals = model.signals
+    }
+
+    if (isRetry && justification && !appealExhausted) {
+      cache.markAppeal(rootSessionID, request.action, request.always)
     }
 
     // A model review can finish after the request is already resolved: `opencode
     // run`'s headless client auto-rejects on `permission.asked` without waiting
     // for the plugin. Record the completed review for calibration, but never
     // reply or cache an approval for a permission that is already settled.
-    writeDiag(config, request, startedAt, decision, sourceLabel(effectivePolicy, cached, config), signals, cautions)
+    writeDiag(config, request, startedAt, decision, appealExhausted ? "appeal" : sourceLabel(effectivePolicy, cached, config), signals, cautions)
     if (signal.aborted) return
 
     if (config.sessionApprovals && cacheKey && decision.kind === "allow" && !decision.reasonCode.startsWith("shadow_")) {
@@ -127,7 +141,7 @@ export async function reviewAndReply(
         sessionID: request.sessionID,
         requestID: request.id,
         reply: "reject",
-        message: `Calibrated Access blocked this action: ${decision.reason}${alternativesSection(decision.alternatives)}`,
+        message: buildDenialMessage(decision.reason, decision.alternatives),
         protocol: request.protocol,
       })
       context.showToast?.({ title: "Blocked", message: decision.reason, variant: "warning", duration: 4_000 })
@@ -161,9 +175,10 @@ async function modelDecision(
   isRetry: boolean,
   findings: DeterministicFinding[],
   fetchFn?: FetchFn,
+  justification?: string,
 ): Promise<{ decision: Decision; signals: SignalScores }> {
-  const raw = await rateCommand(request.resources.join(" && "), userMessages, config, isRetry, fetchFn, findings)
-  const assessment = assessSignals(raw, config.signalThresholds, findings)
+  const raw = await rateCommand(request.resources.join(" && "), userMessages, config, isRetry, fetchFn, findings, justification)
+  const assessment = assessSignals(raw, config.signalThresholds, findings, { justification: justification !== undefined })
 
   if (config.mode === "shadow") {
     if (assessment.kind === "block" || assessment.kind === "ask") {
@@ -225,7 +240,7 @@ async function modelDecision(
       decision: {
         kind: "deny",
         reasonCode: `signal_ask_${assessment.signal}`,
-        reason: assessment.finding
+        reason: assessment.finding || assessment.justification
           ? assessment.reason
           : `Signal "${assessment.signal}" at ${assessment.probability.toFixed(2)} meets the ask threshold; confirm with the user before retrying.`,
         ...(findingAlternatives ? { alternatives: findingAlternatives } : {}),

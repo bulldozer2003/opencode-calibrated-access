@@ -17,8 +17,8 @@ export const DEFAULT_SIGNAL_THRESHOLDS = {
 export type SignalAssessment =
   | { kind: "allow"; reasonCode: "signals_below_threshold"; reason: string }
   | { kind: "allow"; reasonCode: "user_requested_override"; reason: string }
-  | { kind: "ask"; signal: RiskSignalName; probability: number; reason: string; finding?: boolean }
-  | { kind: "block"; signal: RiskSignalName; probability: number; reason: string; finding?: boolean }
+  | { kind: "ask"; signal: RiskSignalName; probability: number; reason: string; finding?: boolean; justification?: boolean }
+  | { kind: "block"; signal: RiskSignalName; probability: number; reason: string; finding?: boolean; justification?: boolean }
   | { kind: "unjudged"; reason: string }
 
 const RISK_SIGNALS = SIGNAL_NAMES.filter((name): name is RiskSignalName => name !== "user_requested")
@@ -46,25 +46,41 @@ function findingReason(findings: DeterministicFinding[], summary: string): strin
   return `Deterministic finding (${codes}) sets a minimum outcome of ask: ${messages}. ${summary}.`
 }
 
+export interface AssessOptions {
+  /**
+   * True when the retry carries a justification for a previously blocked
+   * request. The judge's `user_requested` score is the soundness signal: a
+   * high score means the justification is supported by the user's request.
+   * A sound justification downgrades a block to an ask; it never allows
+   * silently and never bypasses a prohibition or a finding floor.
+   */
+  justification?: boolean
+}
+
 export function assessSignals(
   scores: SignalScores,
   thresholds: Record<RiskSignalName, { block: number; ask: number }>,
   findings: DeterministicFinding[] = [],
+  options: AssessOptions = {},
 ): SignalAssessment {
   const considered = RISK_SIGNALS.filter((signal) => isConsidered(scores.signals[signal])).map((signal) => ({
     signal,
     probability: scores.signals[signal].probability,
   }))
   const hasFinding = findings.length > 0
+  const justified = options.justification === true
 
   if (considered.length === 0) {
-    if (hasFinding) {
+    if (hasFinding || justified) {
       return {
         kind: "ask",
-        signal: findingSignal(findings),
+        signal: hasFinding ? findingSignal(findings) : "severity",
         probability: 0,
-        finding: true,
-        reason: findingReason(findings, "no risk signal reached the confidence floor"),
+        ...(hasFinding ? { finding: true } : {}),
+        ...(justified && !hasFinding ? { justification: true } : {}),
+        reason: hasFinding
+          ? findingReason(findings, "no risk signal reached the confidence floor")
+          : "A justification was supplied but no risk signal reached the confidence floor; confirm with the user.",
       }
     }
     return {
@@ -76,12 +92,25 @@ export function assessSignals(
   const blockers = considered.filter((entry) => entry.probability >= thresholds[entry.signal].block)
   const blocker = highest(blockers)
   if (blocker) {
+    const userRequested = scores.signals.user_requested
+    const sound = isConsidered(userRequested) && userRequested.probability >= USER_REQUESTED_OVERRIDE_THRESHOLD
+    const prohibited = blockers.find((entry) => entry.signal === "user_prohibited")
+    if (justified && !hasFinding && !prohibited && sound) {
+      return {
+        kind: "ask",
+        signal: blocker.signal,
+        probability: blocker.probability,
+        justification: true,
+        reason: `Justification supported by the user's request; downgraded signal "${blocker.signal}" from block to ask (p=${blocker.probability.toFixed(2)}). Confirm with the user.`,
+      }
+    }
+    const blockSignal = prohibited ?? blocker
     return {
       kind: "block",
-      signal: blocker.signal,
-      probability: blocker.probability,
+      signal: blockSignal.signal,
+      probability: blockSignal.probability,
       ...(hasFinding ? { finding: true } : {}),
-      reason: `Signal "${blocker.signal}" probability ${blocker.probability.toFixed(2)} meets the block threshold ${thresholds[blocker.signal].block}.`,
+      reason: `Signal "${blockSignal.signal}" probability ${blockSignal.probability.toFixed(2)} meets the block threshold ${thresholds[blockSignal.signal].block}${prohibited ? " (user prohibition; a justification cannot bypass it)" : ""}.`,
     }
   }
 
@@ -89,7 +118,7 @@ export function assessSignals(
   const asker = highest(askers)
   if (asker) {
     const userRequested = scores.signals.user_requested
-    if (!hasFinding && isConsidered(userRequested) && userRequested.probability >= USER_REQUESTED_OVERRIDE_THRESHOLD) {
+    if (!hasFinding && !justified && isConsidered(userRequested) && userRequested.probability >= USER_REQUESTED_OVERRIDE_THRESHOLD) {
       return {
         kind: "allow",
         reasonCode: "user_requested_override",
@@ -101,9 +130,12 @@ export function assessSignals(
       signal: asker.signal,
       probability: asker.probability,
       ...(hasFinding ? { finding: true } : {}),
+      ...(justified && !hasFinding ? { justification: true } : {}),
       reason: hasFinding
         ? findingReason(findings, `highest signal "${asker.signal}" at ${asker.probability.toFixed(2)}`)
-        : `Signal "${asker.signal}" probability ${asker.probability.toFixed(2)} meets the ask threshold ${thresholds[asker.signal].ask}.`,
+        : justified
+          ? `Justification supplied; signal "${asker.signal}" at ${asker.probability.toFixed(2)} stays a confirmation ask (never a silent allow).`
+          : `Signal "${asker.signal}" probability ${asker.probability.toFixed(2)} meets the ask threshold ${thresholds[asker.signal].ask}.`,
     }
   }
 
@@ -116,6 +148,15 @@ export function assessSignals(
       probability: top?.probability ?? 0,
       finding: true,
       reason: findingReason(findings, summary),
+    }
+  }
+  if (justified) {
+    return {
+      kind: "ask",
+      signal: "severity",
+      probability: top?.probability ?? 0,
+      justification: true,
+      reason: `Justification supplied; confirm with the user (${summary}).`,
     }
   }
   return {

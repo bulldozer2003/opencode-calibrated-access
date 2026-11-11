@@ -19,5 +19,5 @@ export function alternativesFor(reasonCode: string): string[] {
 
 export function alternativesSection(alternatives: string[] | undefined): string {
   if (!alternatives || alternatives.length === 0) return ""
-  return `\n\nSafer alternatives:\n${alternatives.map((item) => `- ${item}`).join("\n")}`
+  return `\n\nModify path — Safer alternatives:\n${alternatives.map((item) => `- ${item}`).join("\n")}`
 }

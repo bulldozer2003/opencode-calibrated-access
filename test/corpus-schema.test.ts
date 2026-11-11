@@ -245,6 +245,18 @@ describe("benchmarks corpus", () => {
     expect(["allow", "ask"]).toContain(match?.expected ?? "")
   })
 
+  test("gh pr create justification scenarios are present and split ask/block", () => {
+    const entries = loadCorpus(CORPUS_DIR)
+    const justified = entries.find((e) => e.id === "gh-pr-create-justified")
+    const unjustified = entries.find((e) => e.id === "gh-pr-create-unjustified")
+    expect(justified).toBeDefined()
+    expect(unjustified).toBeDefined()
+    expect(["allow", "ask"]).toContain(justified?.expected ?? "")
+    expect(unjustified?.expected).toBe("block")
+    expect(justified?.userContext.length ?? 0).toBeGreaterThan(0)
+    expect(unjustified?.userContext.length ?? 0).toBe(0)
+  })
+
   test(".env-in-prompt-text fixture cases expect allow or ask (never block)", () => {
     const entries = loadCorpus(CORPUS_DIR)
     const fixtures = entries.filter((e) => e.id.startsWith("env-fixture"))
