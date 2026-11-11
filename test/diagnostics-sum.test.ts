@@ -143,7 +143,7 @@ describe("summarizeDiagnostics — per-command-pattern score history", () => {
       line({ event: "decision", action: "bash", source: "typesafe", signals: { exfiltration: { probability: 0.4, confidence: 0.9 } } }),
     ]
     const s = summarizeDiagnostics(lines)
-    const stats = s.perCommand["bash"].signals.exfiltration!
+    const stats = s.perCommand["bash"]!.signals.exfiltration!
     expect(stats.count).toBe(3)
     expect(stats.mean).toBeCloseTo(0.4, 10)
     expect(stats.max).toBeCloseTo(0.6, 10)
@@ -157,11 +157,11 @@ describe("summarizeDiagnostics — per-command-pattern score history", () => {
       line({ event: "decision", action: "external_directory", source: "typesafe", decision: "allow", signals: { exfiltration: { probability: 0.9 } } }),
     ]
     const s = summarizeDiagnostics(lines)
-    expect(s.perCommand["bash"].count).toBe(2)
-    expect(s.perCommand["bash"].outcomes).toEqual({ allow: 1, deny: 1 })
-    expect(s.perCommand["external_directory"].count).toBe(1)
-    expect(s.perCommand["bash"].signals.exfiltration!.mean).toBeCloseTo(0.4, 10)
-    expect(s.perCommand["external_directory"].signals.exfiltration!.mean).toBeCloseTo(0.9, 10)
+    expect(s.perCommand["bash"]!.count).toBe(2)
+    expect(s.perCommand["bash"]!.outcomes).toEqual({ allow: 1, deny: 1 })
+    expect(s.perCommand["external_directory"]!.count).toBe(1)
+    expect(s.perCommand["bash"]!.signals.exfiltration!.mean).toBeCloseTo(0.4, 10)
+    expect(s.perCommand["external_directory"]!.signals.exfiltration!.mean).toBeCloseTo(0.9, 10)
   })
 
   test("counts events without signal data but excludes them from signal stats", () => {
@@ -172,10 +172,10 @@ describe("summarizeDiagnostics — per-command-pattern score history", () => {
       line({ event: "decision", action: "bash", source: "typesafe", decision: "allow", signals: null }),
     ]
     const s = summarizeDiagnostics(lines)
-    expect(s.perCommand["bash"].count).toBe(4)
-    expect(s.perCommand["bash"].outcomes).toEqual({ allow: 3, deny: 1 })
-    expect(s.perCommand["bash"].signals.exfiltration!.count).toBe(1)
-    expect(s.perCommand["bash"].signals.exfiltration!.mean).toBeCloseTo(0.2, 10)
+    expect(s.perCommand["bash"]!.count).toBe(4)
+    expect(s.perCommand["bash"]!.outcomes).toEqual({ allow: 3, deny: 1 })
+    expect(s.perCommand["bash"]!.signals.exfiltration!.count).toBe(1)
+    expect(s.perCommand["bash"]!.signals.exfiltration!.mean).toBeCloseTo(0.2, 10)
   })
 
   test("tolerates partial signal maps and non-numeric probabilities", () => {
@@ -186,11 +186,11 @@ describe("summarizeDiagnostics — per-command-pattern score history", () => {
       line({ event: "decision", action: "bash", source: "typesafe", signals: { exfiltration: { confidence: 0.9 } } }),
     ]
     const s = summarizeDiagnostics(lines)
-    expect(s.perCommand["bash"].count).toBe(4)
-    expect(s.perCommand["bash"].signals.exfiltration!.count).toBe(1)
-    expect(s.perCommand["bash"].signals.exfiltration!.mean).toBeCloseTo(0.2, 10)
-    expect(s.perCommand["bash"].signals.destructive!.count).toBe(1)
-    expect(s.perCommand["bash"].signals.destructive!.mean).toBeCloseTo(0.5, 10)
+    expect(s.perCommand["bash"]!.count).toBe(4)
+    expect(s.perCommand["bash"]!.signals.exfiltration!.count).toBe(1)
+    expect(s.perCommand["bash"]!.signals.exfiltration!.mean).toBeCloseTo(0.2, 10)
+    expect(s.perCommand["bash"]!.signals.destructive!.count).toBe(1)
+    expect(s.perCommand["bash"]!.signals.destructive!.mean).toBeCloseTo(0.5, 10)
   })
 })
 
