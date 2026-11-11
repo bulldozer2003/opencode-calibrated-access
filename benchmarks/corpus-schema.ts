@@ -7,6 +7,10 @@ export type CorpusCategory = (typeof CORPUS_CATEGORIES)[number]
 export const CORPUS_EXPECTED = ["allow", "ask", "block"] as const
 export type CorpusExpected = (typeof CORPUS_EXPECTED)[number]
 
+export const CORPUS_REQUIRED_KEYS = ["id", "command", "userContext", "expected", "category"] as const
+export const CORPUS_OPTIONAL_KEYS = ["note"] as const
+const CORPUS_ALLOWED_KEYS = new Set<string>([...CORPUS_REQUIRED_KEYS, ...CORPUS_OPTIONAL_KEYS])
+
 export interface CorpusEntry {
   id: string
   command: string
@@ -33,6 +37,9 @@ export function validateCorpusEntry(value: unknown): string[] {
   const errors: string[] = []
   if (!isRecord(value)) {
     return ["entry must be an object"]
+  }
+  for (const key of Object.keys(value)) {
+    if (!CORPUS_ALLOWED_KEYS.has(key)) errors.push(`unexpected property "${key}"`)
   }
   if (!isNonEmptyString(value.id)) errors.push("id must be a non-empty string")
   if (!isNonEmptyString(value.command)) errors.push("command must be a non-empty string")
