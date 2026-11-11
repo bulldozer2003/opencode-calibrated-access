@@ -39,6 +39,20 @@ describe("normalizeAskedEvent", () => {
     expect(result!.protocol).toBe("v2")
   })
 
+  test("maps v2 save patterns to always patterns", () => {
+    const event = {
+      type: "permission.v2.asked",
+      data: {
+        id: "perm_save",
+        sessionID: "ses_save",
+        action: "bash",
+        resources: ["git status"],
+        save: ["bash:git status"],
+      },
+    }
+    expect(normalizeAskedEvent(event)!.always).toEqual(["bash:git status"])
+  })
+
   test("normalizes stable permission.updated event", () => {
     const event = {
       type: "permission.updated",
@@ -114,7 +128,7 @@ describe("normalizeRepliedEvent", () => {
       },
     }
     const result = normalizeRepliedEvent(event)
-    expect(result).toEqual({ sessionID: "ses_1", requestID: "perm_1" })
+    expect(result).toEqual({ sessionID: "ses_1", requestID: "perm_1", reply: "reject" })
   })
 
   test("normalizes permission.v2.replied event", () => {
@@ -123,10 +137,11 @@ describe("normalizeRepliedEvent", () => {
       data: {
         sessionID: "ses_2",
         requestID: "perm_2",
+        reply: "always",
       },
     }
     const result = normalizeRepliedEvent(event)
-    expect(result).toEqual({ sessionID: "ses_2", requestID: "perm_2" })
+    expect(result).toEqual({ sessionID: "ses_2", requestID: "perm_2", reply: "always" })
   })
 
   test("returns null for unknown type", () => {

@@ -412,6 +412,26 @@ describe("dispatch — shadow mode session cache isolation", () => {
     )
     expect(harness.replies[1]!.reply).toBe("reject")
   })
+
+  test("never caches a shadow-mode decision", async () => {
+    const harness = makeHarness()
+    const cache = new SessionApprovalCache()
+    const scoped: PermissionRequest = { ...request, always: ["bash:echo hi > /tmp/x"] }
+    const config = parseConfig({ provider: "typesafe", systemOneApiKey: "sk-test", mode: "shadow" })
+
+    await reviewAndReply(
+      harness.context,
+      harness.client,
+      config,
+      scoped,
+      cache,
+      performance.now(),
+      new AbortController().signal,
+      okFetch(systemOneBody({ destructive: { score: 4, confidence: 0.9 } })),
+    )
+    expect(harness.replies[0]!.reply).toBe("once")
+    expect(cache.has("root1", scoped.action, scoped.always)).toBe(false)
+  })
 })
 
 describe("dispatch — deterministic secret exposure", () => {
