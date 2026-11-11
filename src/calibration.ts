@@ -38,6 +38,7 @@ export const SHADOW_REASON_CODES: readonly string[] = [
   "shadow_block",
   "shadow_unjudged",
   "shadow_appeal_exhausted",
+  "shadow_unjustified_retry",
 ]
 
 export interface DecisionRecord {
@@ -90,7 +91,8 @@ export function effectiveOutcome(decision: string, reasonCode: string): Effectiv
     code === "unjudged" ||
     code === "catastrophic_delete" ||
     code === "explicit_user_prohibition" ||
-    code === "appeal_exhausted"
+    code === "appeal_exhausted" ||
+    code === "unjustified_retry"
   ) {
     return "block"
   }
