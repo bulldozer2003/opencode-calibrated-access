@@ -1,5 +1,6 @@
 import type { PermissionRequest, ResumeRouting } from "./types.ts"
 import { CALIBRATED_PREFIX } from "./types.ts"
+import { extractBlockedCommand } from "./resume.ts"
 
 const MAX_MESSAGE_CHARS = 4_000
 
@@ -71,19 +72,40 @@ export function isPluginContinuation(text: string): boolean {
  * is not a justification; the message the agent (or user) sends after it is.
  */
 export function extractRetryJustification(messages: unknown[]): string | undefined {
-  const textAt = (message: unknown): string | undefined =>
-    typeof message === "object" && message !== null ? messageText(message as Record<string, unknown>) : undefined
-  let lastContinuation = -1
-  for (let i = 0; i < messages.length; i++) {
-    const text = textAt(messages[i])
-    if (text !== undefined && isPluginContinuation(text)) lastContinuation = i
-  }
+  const lastContinuation = lastContinuationIndex(messages)
   if (lastContinuation === -1) return undefined
   for (let i = messages.length - 1; i > lastContinuation; i--) {
-    const text = textAt(messages[i])
+    const text = messageTextAt(messages[i])
     if (text !== undefined && !isPluginContinuation(text)) return text.slice(0, MAX_MESSAGE_CHARS)
   }
   return undefined
+}
+
+/**
+ * The command of the most recent denial continuation, or undefined when the
+ * session has no continuation. This is the identity a justified retry must
+ * match: a retry of a DIFFERENT command is the modify path (a fresh request),
+ * not a justification. `dispatch` only consults the appeal bound for a matching
+ * retry, so the retry identity and the appeal bound cannot diverge.
+ */
+export function lastBlockedCommand(messages: unknown[]): string | undefined {
+  const lastContinuation = lastContinuationIndex(messages)
+  if (lastContinuation === -1) return undefined
+  const text = messageTextAt(messages[lastContinuation])
+  return text === undefined ? undefined : extractBlockedCommand(text)
+}
+
+function lastContinuationIndex(messages: unknown[]): number {
+  let last = -1
+  for (let i = 0; i < messages.length; i++) {
+    const text = messageTextAt(messages[i])
+    if (text !== undefined && isPluginContinuation(text)) last = i
+  }
+  return last
+}
+
+function messageTextAt(message: unknown): string | undefined {
+  return isRecord(message) ? messageText(message) : undefined
 }
 
 export function collectUserMessages(messages: unknown[], count: number): string[] {

