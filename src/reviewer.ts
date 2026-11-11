@@ -7,6 +7,7 @@ import { writeDiagnostic, describeError } from "./diagnostics.ts"
 
 interface PluginOverrides {
   client?: ReviewerClient
+  cache?: SessionApprovalCache
   sleep?: () => Promise<void>
   idleSleep?: () => Promise<void>
   idleIntervalMs?: number
@@ -28,7 +29,9 @@ const DEFAULT_IDLE_MAX_WAIT_MS = 10000
 export function installReviewer(context: RuntimeContext, overrides: PluginOverrides = {}): () => void {
   const config = parseConfig(context.options)
   const inFlight = new Map<string, AbortController>()
-  const cache = new SessionApprovalCache()
+  const pendingRequests = new Map<string, PermissionRequest>()
+  const pluginReplies = new Set<string>()
+  const cache = overrides.cache ?? new SessionApprovalCache()
   const sleep = overrides.sleep ?? defaultSleep
   const idle: IdleWaitConfig = {
     sleep: overrides.idleSleep ?? (() => new Promise((resolve) => setTimeout(resolve, overrides.idleIntervalMs ?? DEFAULT_IDLE_INTERVAL_MS))),
@@ -44,15 +47,28 @@ export function installReviewer(context: RuntimeContext, overrides: PluginOverri
 
   writeDiag(config, { event: "plugin_started", directory: context.directory ?? null })
 
-  const offReplied = context.data.on("permission.v2.replied", (event) => {
-    const reply = normalizeRepliedEvent(event)
-    if (reply) cancelInFlight(inFlight, reply.requestID)
-  })
+  const baseClient = overrides.client ?? buildClient(context)
+  const client: ReviewerClient = {
+    async reply(input) {
+      pluginReplies.add(input.requestID)
+      return baseClient.reply(input)
+    },
+  }
 
-  const offStableReplied = context.data.on("permission.replied", (event) => {
+  const handleReplied = async (event: unknown) => {
     const reply = normalizeRepliedEvent(event)
-    if (reply) cancelInFlight(inFlight, reply.requestID)
-  })
+    if (!reply) return
+    cancelInFlight(inFlight, reply.requestID)
+    const request = pendingRequests.get(reply.requestID)
+    pendingRequests.delete(reply.requestID)
+    if (pluginReplies.delete(reply.requestID)) return
+    if (!request || !config.sessionApprovals) return
+    if (reply.reply !== "always" || request.always.length === 0) return
+    cache.add(reply.sessionID, request.action, request.always)
+  }
+
+  const offReplied = context.data.on("permission.v2.replied", handleReplied)
+  const offStableReplied = context.data.on("permission.replied", handleReplied)
 
   const handler = async (event: unknown) => {
     const asked = normalizeAskedEvent(event)
@@ -61,10 +77,11 @@ export function installReviewer(context: RuntimeContext, overrides: PluginOverri
     const controller = new AbortController()
     const startedAt = performance.now()
     inFlight.set(asked.id, controller)
+    pendingRequests.set(asked.id, asked)
 
     try {
       writeDiag(config, { event: "request_received", requestID: asked.id, sessionID: asked.sessionID, action: asked.action })
-      await reviewAndReply(runtime, overrides.client ?? buildClient(context), config, asked, cache, startedAt, controller.signal)
+      await reviewAndReply(runtime, client, config, asked, cache, startedAt, controller.signal)
     } catch (error) {
       if (controller.signal.aborted) return
       overrides.onFailure?.(asked, error)
@@ -86,6 +103,8 @@ export function installReviewer(context: RuntimeContext, overrides: PluginOverri
     offStableReplied()
     for (const c of inFlight.values()) c.abort("plugin disposed")
     inFlight.clear()
+    pendingRequests.clear()
+    pluginReplies.clear()
     cache.clear()
   }
 }

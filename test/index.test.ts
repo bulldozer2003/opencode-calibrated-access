@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { readFileSync, rmSync } from "fs"
 import { installReviewer } from "../src/reviewer.ts"
+import { SessionApprovalCache } from "../src/cache.ts"
 import type { ReviewerClient, RuntimeContext } from "../src/types.ts"
 
 type Handler = (event: unknown) => void
@@ -62,6 +63,17 @@ function askedEvent(id: string, command: string) {
     type: "permission.v2.asked",
     properties: { id, sessionID: "sess1", action: "bash", resources: [command], always: [] },
   }
+}
+
+function scopedAskedEvent(id: string, command: string, pattern: string) {
+  return {
+    type: "permission.asked",
+    properties: { id, sessionID: "sess1", permission: "bash", patterns: [command], always: [pattern] },
+  }
+}
+
+function repliedEvent(requestID: string, reply: "once" | "always" | "reject") {
+  return { type: "permission.replied", properties: { sessionID: "sess1", requestID, reply } }
 }
 
 function diagPath(): string {
@@ -143,6 +155,52 @@ describe("installReviewer", () => {
       runtime.emit("permission.v2.asked", event),
     ])
     expect(replies).toHaveLength(1)
+  })
+
+  test("seeds the session approval cache from a user always reply", async () => {
+    const cache = new SessionApprovalCache()
+    const runtime = makeRuntime()
+    installReviewer(runtime.context, { client: { reply: async () => "replied" }, cache })
+    const pattern = "bash:echo hi > /tmp/x"
+    const asked = runtime.emit("permission.asked", scopedAskedEvent("req-human", "echo hi > /tmp/x", pattern))
+    await runtime.emit("permission.replied", repliedEvent("req-human", "always"))
+    await asked
+    expect(cache.has("sess1", "bash", [pattern])).toBe(true)
+  })
+
+  test("does not seed the cache from a one-time user reply", async () => {
+    const cache = new SessionApprovalCache()
+    const runtime = makeRuntime()
+    installReviewer(runtime.context, { client: { reply: async () => "replied" }, cache })
+    const pattern = "bash:echo hi > /tmp/x"
+    const asked = runtime.emit("permission.asked", scopedAskedEvent("req-once", "echo hi > /tmp/x", pattern))
+    await runtime.emit("permission.replied", repliedEvent("req-once", "once"))
+    await asked
+    expect(cache.has("sess1", "bash", [pattern])).toBe(false)
+  })
+
+  test("does not seed the cache from the plugin's own reply", async () => {
+    const cache = new SessionApprovalCache()
+    const runtime = makeRuntime()
+    installReviewer(runtime.context, {
+      client: { reply: async () => "replied" },
+      cache,
+    })
+    const pattern = "bash:echo hi > /tmp/x"
+    await runtime.emit("permission.asked", scopedAskedEvent("req-plugin", "echo hi > /tmp/x", pattern))
+    await runtime.emit("permission.replied", repliedEvent("req-plugin", "always"))
+    expect(cache.has("sess1", "bash", [pattern])).toBe(false)
+  })
+
+  test("does not seed the cache when sessionApprovals is false", async () => {
+    const cache = new SessionApprovalCache()
+    const runtime = makeRuntime({}, { sessionApprovals: false })
+    installReviewer(runtime.context, { client: { reply: async () => "replied" }, cache })
+    const pattern = "bash:echo hi > /tmp/x"
+    const asked = runtime.emit("permission.asked", scopedAskedEvent("req-disabled", "echo hi > /tmp/x", pattern))
+    await runtime.emit("permission.replied", repliedEvent("req-disabled", "always"))
+    await asked
+    expect(cache.has("sess1", "bash", [pattern])).toBe(false)
   })
 
   test("resumes a denied session with the continuation message and alternatives", async () => {
