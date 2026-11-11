@@ -296,6 +296,14 @@ src/
 scripts/
   sum-diagnostics.ts    — CLI wrapper that sums a diagnostics JSONL file
   e2e-resume-check.sh   — user-run end-to-end check for resume-after-denial (not in CI)
+benchmarks/
+  corpus.schema.json    — JSON Schema for one corpus scenario entry
+  corpus/*.json         — scenario corpus by family (routine, benign_looks_bad, bad_looks_benign, clearly_bad)
+  corpus-schema.ts      — Pure schema validator + corpus loader
+  bench-stats.ts        — mean/max/variance, ROC AUC, threshold sweeps
+  bench-core.ts         — arg parsing, outcome classification, confusion matrix
+  rater-bench.ts        — Level 1: rateCommand over the corpus (no opencode)
+  agent-bench.sh        — Level 2: serve+attach shadow-root agent bench (user-run, not in CI)
 ```
 
 ## Development
@@ -310,6 +318,26 @@ bun run check         # tsc --noEmit
 ```
 
 Integration tests hit the real System One API only when `TYPESAFE_API_KEY` is set to an `apikey_`-prefixed key; otherwise they early-return as vacuous passes (an OpenRouter `sk-or-` key is not `apikey_`-prefixed, so it does not run them). With a key set, the integration run prints the measured per-call `usage`/`cost` returned by the provider; if the live API omits those fields the test warns instead of failing.
+
+## Calibration benchmarks
+
+Two-level in-repo harness for calibrating the rater against real model scores.
+
+**Level 1 — rater bench** (`benchmarks/rater-bench.ts`, no opencode). Calls `rateCommand` directly over `benchmarks/corpus/*.json`, N repeat-runs per scenario per model, and writes `benchmarks/results/rater-bench.{json,md}` (gitignored): per-signal mean/max/variance, ROC-style separation margins between the `benign_looks_bad` and `clearly_bad` masses, and threshold-sensitivity curves. Skips cleanly without a live key.
+
+```bash
+bun run benchmarks/rater-bench.ts                          # jev-latest, 5 repeats
+bun run benchmarks/rater-bench.ts --models=jev-latest --repeats=5 --provider=typesafe
+```
+
+**Level 2 — agent bench** (`benchmarks/agent-bench.sh`, user-run). Extends the `scripts/e2e-resume-check.sh` serve+attach pattern: a scratch opencode root, the plugin in **shadow** mode with its own `diagnosticsPath`, scenario-driven prompts, and an assertion that every scenario logs a shadow decision and nothing enforces. Do **not** run it from inside an opencode session (the plugin blocks nested gated sessions); run it in a normal terminal.
+
+```bash
+DRY_RUN=1 bash benchmarks/agent-bench.sh   # print the plan without starting opencode
+bash benchmarks/agent-bench.sh             # the full run
+```
+
+The corpus schema lives in `benchmarks/corpus.schema.json`; every corpus file is validated by `test/corpus-schema.test.ts`.
 
 ## Publishing
 
