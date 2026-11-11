@@ -83,9 +83,10 @@ export async function reviewAndReply(
       })
     }
 
-    const isRetry = detectRetryAfterDenial(rawMessages, request.resources.join(" && "))
+    const command = request.resources.join(" && ")
+    const isRetry = detectRetryAfterDenial(rawMessages, command)
     const justification = isRetry ? extractRetryJustification(rawMessages) : undefined
-    const appealExhausted = isRetry && cache.hasAppeal(rootSessionID, request.action, request.always)
+    const appealExhausted = isRetry && cache.hasAppeal(rootSessionID, request.action, request.always, command)
     const cautions = findings.filter((finding) => finding.severity === "caution")
 
     let decision: Decision
@@ -111,7 +112,7 @@ export async function reviewAndReply(
     }
 
     if (isRetry && justification && !appealExhausted) {
-      cache.markAppeal(rootSessionID, request.action, request.always)
+      cache.markAppeal(rootSessionID, request.action, request.always, command)
     }
 
     // A model review can finish after the request is already resolved: `opencode

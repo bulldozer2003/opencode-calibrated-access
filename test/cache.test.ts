@@ -37,3 +37,30 @@ describe("SessionApprovalCache", () => {
     expect(cache.has("ses_root", "bash", ["git diff", "git status"])).toBe(true)
   })
 })
+
+describe("SessionApprovalCache appeals", () => {
+  test("starts empty", () => {
+    const cache = new SessionApprovalCache()
+    expect(cache.hasAppeal("ses_root", "bash", [], "gh pr create")).toBe(false)
+  })
+
+  test("marks and retrieves the appeal for the exact command", () => {
+    const cache = new SessionApprovalCache()
+    cache.markAppeal("ses_root", "bash", [], "gh pr create")
+    expect(cache.hasAppeal("ses_root", "bash", [], "gh pr create")).toBe(true)
+  })
+
+  test("a different command with the same session/action/patterns does not match", () => {
+    const cache = new SessionApprovalCache()
+    cache.markAppeal("ses_root", "bash", ["git status"], "gh pr create")
+    expect(cache.hasAppeal("ses_root", "bash", ["git status"], "gh pr merge")).toBe(false)
+  })
+
+  test("different session, action, or patterns do not match", () => {
+    const cache = new SessionApprovalCache()
+    cache.markAppeal("ses_root", "bash", ["git status"], "gh pr create")
+    expect(cache.hasAppeal("ses_other", "bash", ["git status"], "gh pr create")).toBe(false)
+    expect(cache.hasAppeal("ses_root", "external_directory", ["git status"], "gh pr create")).toBe(false)
+    expect(cache.hasAppeal("ses_root", "bash", ["git diff"], "gh pr create")).toBe(false)
+  })
+})

