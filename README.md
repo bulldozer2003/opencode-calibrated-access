@@ -296,10 +296,15 @@ src/
   context.ts     — Normalize permission events, collect user messages
   diagnostics.ts — JSONL decision logging
   diagnostics-sum.ts — Pure aggregator for diagnostics JSONL (tokens/USD/per-day/per-session)
+  calibration.ts — Pure shadow-log calibration analysis (distributions/near-threshold/flips/review queues)
   resume.ts      — Build continuation messages on denial
 scripts/
   sum-diagnostics.ts    — CLI wrapper that sums a diagnostics JSONL file
+  calibration-report.ts — CLI wrapper that prints the calibration report for a diagnostics JSONL file
+  validate-thresholds.ts — CLI wrapper that validates a signalThresholds override object
   e2e-resume-check.sh   — user-run end-to-end check for resume-after-denial (not in CI)
+skills/
+  calibration/SKILL.md  — agent skill: analyze shadow logs, propose/confirm signalThresholds overrides
 benchmarks/
   corpus.schema.json    — JSON Schema for one corpus scenario entry
   corpus/*.json         — scenario corpus by family (routine, benign_looks_bad, bad_looks_benign, clearly_bad)
@@ -316,7 +321,7 @@ Prerequisites: [Bun](https://bun.sh) (runs tests + typecheck) and Node ≥ 22 (p
 
 ```bash
 bun install           # one-time setup after cloning
-bun test              # 309 tests
+bun test              # 405 tests
 bun test --watch      # iterate
 bun run check         # tsc --noEmit
 ```
@@ -342,6 +347,50 @@ bash benchmarks/agent-bench.sh             # the full run
 ```
 
 The corpus schema lives in `benchmarks/corpus.schema.json`; every corpus file is validated by `test/corpus-schema.test.ts`.
+
+## Calibration skill
+
+`skills/calibration/SKILL.md` is an agent skill that turns a shadow-mode
+diagnostics JSONL into per-signal `signalThresholds` proposals. It reads the
+same `decision` events the plugin writes (per-signal probabilities, reviewed
+command text, would-be outcome), reuses `scripts/sum-diagnostics.ts` for the
+spend/shape overview, and drives the tested analysis helper
+`scripts/calibration-report.ts` (`src/calibration.ts`) for:
+
+- per-signal score distributions (count / mean / min / max / variance),
+- near-threshold decisions (within 0.15 of a signal's block/ask threshold),
+- a candidate-threshold table — which commands flip `allow->ask` or
+  `ask->block` at alternative thresholds, with the command text,
+- FP/FN review queues (blocked-but-benign vs dangerous-but-allowed).
+
+It then proposes overrides, validates them with
+`scripts/validate-thresholds.ts`, and — only after the user confirms — merges
+them into the plugin options in `opencode.jsonc`. opencode must be restarted for
+the new thresholds to take effect.
+
+**Install** (the skill ships in this repo; opencode reads skills from its config
+directory, so copy or symlink it there):
+
+```bash
+# from a repo checkout (adjust the skills dir to your setup)
+ln -s "$(pwd)/skills/calibration" ~/.config/opencode/skills/calibration
+# or: cp -r skills/calibration ~/.config/opencode/skills/calibration
+
+# from an npm install (skills/ and scripts/ ship in the package)
+ln -s "$(pwd)/node_modules/opencode-calibrated-access/skills/calibration" ~/.config/opencode/skills/calibration
+```
+
+**Use** — ask your agent to "calibrate the calibrated-access thresholds" or run
+the helper directly:
+
+```bash
+bun run scripts/calibration-report.ts /home/you/.opencode/calibrated-access.jsonl
+bun run scripts/calibration-report.ts /home/you/.opencode/calibrated-access.jsonl --json
+```
+
+`test/fixtures/calibration-sample.jsonl` is a synthetic diagnostics fixture the
+skill's analysis is dry-run against (see `test/calibration.test.ts`); never point
+the helper at your real log from tests.
 
 ## Publishing
 
