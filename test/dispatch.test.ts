@@ -640,3 +640,71 @@ describe("dispatch — sessionApprovals gating", () => {
     expect(harness.replies[1]!.reply).toBe("once")
   })
 })
+
+describe("dispatch — headless auto-reject race", () => {
+  async function reviewResolvedMidFlight(
+    req: PermissionRequest,
+    cache: SessionApprovalCache,
+  ): Promise<{ harness: Harness; lines: Record<string, unknown>[] }> {
+    const path = `/tmp/calibrated-access-dispatch-${crypto.randomUUID()}.jsonl`
+    const config = parseConfig({ provider: "typesafe", systemOneApiKey: "sk-test", mode: "enforce", diagnosticsPath: path })
+    const harness = makeHarness()
+    const controller = new AbortController()
+
+    let releaseModel: (() => void) | undefined
+    const modelGate = new Promise<void>((resolve) => {
+      releaseModel = resolve
+    })
+    let modelStarted: (() => void) | undefined
+    const started = new Promise<void>((resolve) => {
+      modelStarted = resolve
+    })
+    const gatedFetch = (async () => {
+      modelStarted!()
+      await modelGate
+      return { ok: true, status: 200, json: async () => systemOneBody(), text: async () => "" }
+    }) as unknown as FetchFn
+
+    const review = reviewAndReply(
+      harness.context,
+      harness.client,
+      config,
+      req,
+      cache,
+      performance.now(),
+      controller.signal,
+      gatedFetch,
+    )
+
+    await started
+    controller.abort("permission resolved")
+    releaseModel!()
+    await review
+
+    const lines = readFileSync(path, "utf-8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+    unlinkSync(path)
+    return { harness, lines }
+  }
+
+  test("records the completed review when the request is resolved before the reply", async () => {
+    const { harness, lines } = await reviewResolvedMidFlight(request, new SessionApprovalCache())
+
+    const decision = lines.find((line) => line.event === "decision")
+    expect(decision).toBeDefined()
+    expect(decision!.source).toBe("typesafe")
+    expect(decision!.reasonCode).toBe("signals_below_threshold")
+    expect(harness.replies).toHaveLength(0)
+  })
+
+  test("does not cache an approval for a request resolved before the reply", async () => {
+    const req: PermissionRequest = { ...request, always: ["bash:echo hi > /tmp/x"] }
+    const cache = new SessionApprovalCache()
+    const { harness } = await reviewResolvedMidFlight(req, cache)
+
+    expect(cache.has("root1", req.action, req.always)).toBe(false)
+    expect(harness.replies).toHaveLength(0)
+  })
+})

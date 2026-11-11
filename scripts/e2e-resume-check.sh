@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
-# scripts/e2e-resume-check.sh — USER-RUN end-to-end check for resume-after-denial.
+# scripts/e2e-resume-check.sh — USER-RUN end-to-end check for resume-after-denial
+# and the headless auto-reject race.
 #
 # NOT run by `bun test` or CI. Run it yourself in a normal terminal AND NOT from
 # inside an opencode session (the plugin intentionally blocks spawning nested
@@ -14,34 +15,55 @@
 # plugin's resume loop) alive after the run client exits. That is the only
 # automated shape that can validate resume end-to-end.
 #
-# What it does:
-#   1. Creates a throwaway directory with a FAKE .env (no real secrets).
-#   2. Writes an opencode.json that loads this plugin in enforce mode with a
-#      diagnosticsPath in that directory.
-#   3. Starts `opencode serve` in the background on a free port (in the throwaway
-#      directory, so the project config + plugin load there).
-#   4. Polls the server health endpoint until ready (bounded).
-#   5. Runs ONE `opencode run --attach http://127.0.0.1:<port> --dir <tmpdir>`
-#      asking the agent to print that .env. The plugin's deterministic
-#      secret-exposure rule blocks the read and re-prompts the session
-#      (resume-after-denial); the resume loop keeps running in the server.
-#   6. Sleeps ~12s after the client exits so the idle-wait + started-verification
-#      window can complete, then greps the diagnostics JSONL.
-#   7. Kills the server (trap EXIT for cleanup).
+# Two scenarios:
 #
-# PASS requires the newest `resume` event to have BOTH "ok":true AND a
-# "routing" object carrying an agent — i.e. opencode accepted the continuation
-# prompt AND it landed on a routed agent. `started` is informational and printed
-# on its own STARTED:true|false|null line; it is NOT part of the PASS criteria.
+#   Scenario 1 — deterministic block. The agent is asked to print a fake `.env`.
+#     The plugin's deterministic secret-exposure rule (`fastDeny`) replies before
+#     the client can auto-reject, then re-prompts the session (resume-after-denial).
+#     PASS: the newest `resume` event has `ok: true` AND a `routing` object
+#     carrying an agent. `started` is informational (its own STARTED line).
+#
+#   Scenario 2 — model-reviewed command (regression guard for #21). The agent is
+#     asked to run a benign non-routine command that reaches the model. opencode's
+#     headless `run` client auto-rejects `permission.asked` immediately (see the
+#     `opencode run` handler: on `permission.asked` it replies `reject` unless
+#     `--auto`/`--yolo`/`--dangerously-skip-permissions`), so the plugin's reply
+#     loses that race. The plugin still runs the review to completion and writes
+#     the `decision` event — it records a settled permission but never replies or
+#     caches for it. PASS: at least one model-sourced `decision` event exists.
+#
+# Timing instrumentation: each `opencode run` invocation is bracketed with
+# `date +%s%3N` wall-clock timestamps, and the plugin's own `elapsedMs` is read
+# from each `decision` event. That is how you measure the headless auto-reject
+# grace window empirically: a deterministic decision's `elapsedMs` is in the low
+# milliseconds (it beats the auto-reject), while a model-reviewed decision's is in
+# the hundreds-to-thousands (it loses the reply race but is still logged). The
+# scenario-2 loop retries a few times so a transient plugin/run hiccup does not
+# fail the guard.
 #
 # Env overrides:
 #   CALIBRATED_PLUGIN   plugin specifier opencode should load (default: this repo)
 #   CALIBRATED_MODEL    optional --model value for `opencode run`
 #   KEEP_TMP=1          keep the temp dir for inspection
+#   TYPESAFE_API_KEY    live key for the model-reviewed scenario (auto-loaded from
+#                       the repo-root .env when unset; the value is never printed)
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 plugin_spec="${CALIBRATED_PLUGIN:-$repo_root}"
+
+# Scenario 2 needs a live model key. Mirror bun's ./.env auto-load (which the
+# integration suite relies on) without ever printing the value.
+if [ -z "${TYPESAFE_API_KEY:-}" ] && [ -f "$repo_root/.env" ]; then
+  key_line="$(grep -m1 '^TYPESAFE_API_KEY=' "$repo_root/.env" || true)"
+  if [ -n "$key_line" ]; then
+    TYPESAFE_API_KEY="${key_line#TYPESAFE_API_KEY=}"
+    TYPESAFE_API_KEY="${TYPESAFE_API_KEY%\"}"
+    TYPESAFE_API_KEY="${TYPESAFE_API_KEY#\"}"
+    export TYPESAFE_API_KEY
+    echo "==> loaded TYPESAFE_API_KEY from repo .env for the model-reviewed scenario"
+  fi
+fi
 
 if ! command -v opencode >/dev/null 2>&1; then
   echo "FAIL: 'opencode' is not on PATH." >&2
@@ -52,6 +74,9 @@ if ! command -v curl >/dev/null 2>&1; then
   echo "FAIL: 'curl' is required for the server health poll." >&2
   exit 2
 fi
+
+# GNU date milliseconds (this script targets Linux; see the header).
+now_ms() { date +%s%3N; }
 
 work="$(mktemp -d "${TMPDIR:-/tmp}/calibrated-e2e.XXXXXX")"
 diag="$work/diagnostics.jsonl"
@@ -122,23 +147,46 @@ if [ "$ready" -ne 1 ]; then
   exit 1
 fi
 
-# The inner agent is asked to run the deterministic-block command exactly once.
-prompt='Run exactly this shell command, then stop: cat .env'
+# `elapsedMs` from a decision event line (empty when absent).
+decision_elapsed_ms() {
+  printf '%s' "$1" | sed -n 's/.*"elapsedMs":\([0-9][0-9]*\).*/\1/p'
+}
 
-echo "==> running one attached opencode session"
-run_args=(run --attach "http://127.0.0.1:$port" --dir "$work" "$prompt")
-if [ -n "${CALIBRATED_MODEL:-}" ]; then
-  run_args=(run --attach "http://127.0.0.1:$port" --dir "$work" --model "$CALIBRATED_MODEL" "$prompt")
-fi
+# Decision events whose source is not the deterministic policy, the session
+# cache, or a review failure — i.e. genuine model reviews.
+model_decision_lines() {
+  grep '"event":"decision"' "$diag" 2>/dev/null | grep -v '"source":"policy"' | grep -v '"source":"session"' | grep -v '"source":"error"' || true
+}
 
-opencode "${run_args[@]}" > "$work/transcript.txt" 2>&1 || true
+run_attached() {
+  local prompt="$1" transcript="$2"
+  local args=(run --attach "http://127.0.0.1:$port" --dir "$work" "$prompt")
+  if [ -n "${CALIBRATED_MODEL:-}" ]; then
+    args=(run --attach "http://127.0.0.1:$port" --dir "$work" --model "$CALIBRATED_MODEL" "$prompt")
+  fi
+  opencode "${args[@]}" > "$transcript" 2>&1 || true
+}
+
+# ---------------------------------------------------------------------------
+# Scenario 1 — deterministic block (cat .env): reply beats auto-reject, resume runs.
+# ---------------------------------------------------------------------------
+prompt1='Run exactly this shell command, then stop: cat .env'
+
+echo
+echo "==> scenario 1: deterministic block (cat .env)"
+s1_start="$(now_ms)"
+run_attached "$prompt1" "$work/transcript1.txt"
+s1_end="$(now_ms)"
 
 # The resume loop lives in the (still-running) server. Give the idle-wait (up to
 # 10s) + started-verification (up to 2s) window time to finish after the client
 # exits, then poll a little longer for the fire-and-forget event to land.
 sleep 12
 i=0
-while [ "$i" -lt 20 ] && ! grep -q '"event":"resume"' "$diag" 2>/dev/null; do
+while [ "$i" -lt 20 ]; do
+  if grep -q '"event":"resume"' "$diag" 2>/dev/null; then
+    break
+  fi
   sleep 0.5
   i=$((i + 1))
 done
@@ -149,59 +197,136 @@ if [ ! -s "$diag" ]; then
   echo "--- serve log (last 40 lines) ---"
   tail -n 40 "$work/serve.log" 2>/dev/null || true
   echo "--- transcript (last 40 lines) ---"
-  tail -n 40 "$work/transcript.txt" 2>/dev/null || true
+  tail -n 40 "$work/transcript1.txt" 2>/dev/null || true
   exit 1
 fi
 
 resume_lines="$(grep '"event":"resume"' "$diag" || true)"
-if [ -z "$resume_lines" ]; then
-  echo "FAIL: diagnostics exist but contain no 'resume' event (no denial was triggered, or the run ended first)."
-  echo "--- all diagnostics ---"
-  cat "$diag"
-  echo "--- transcript (last 40 lines) ---"
-  tail -n 40 "$work/transcript.txt" 2>/dev/null || true
-  exit 1
+last_resume=""
+session_id=""
+started_line="null"
+s1_ok=false
+s1_routed=false
+if [ -n "$resume_lines" ]; then
+  last_resume="$(printf '%s\n' "$resume_lines" | tail -n 1)"
+  session_id="$(printf '%s' "$last_resume" | sed -n 's/.*"sessionID":"\([^"]*\)".*/\1/p')"
+  if printf '%s' "$last_resume" | grep -q '"started":true'; then
+    started_line="true"
+  elif printf '%s' "$last_resume" | grep -q '"started":false'; then
+    started_line="false"
+  fi
+  if printf '%s' "$last_resume" | grep -q '"ok":true'; then s1_ok=true; fi
+  if printf '%s' "$last_resume" | grep -q '"routing":{[^}]*"agent"'; then s1_routed=true; fi
 fi
 
-last_resume="$(printf '%s\n' "$resume_lines" | tail -n 1)"
-session_id="$(printf '%s\n' "$last_resume" | sed -n 's/.*"sessionID":"\([^"]*\)".*/\1/p')"
+# ---------------------------------------------------------------------------
+# Scenario 2 — model-reviewed command: the review completes and logs even though
+# the reply loses the headless auto-reject race. Retried a few times.
+# ---------------------------------------------------------------------------
+prompt2='Run exactly this shell command, then stop: echo calibrated-race-probe'
 
-if printf '%s' "$last_resume" | grep -q '"started":true'; then
-  started_line="true"
-elif printf '%s' "$last_resume" | grep -q '"started":false'; then
-  started_line="false"
-else
-  started_line="null"
-fi
+echo
+echo "==> scenario 2: model-reviewed command (echo calibrated-race-probe)"
+s2_start="$(now_ms)"
+s2_end="$(now_ms)"
+s2_attempts=0
+s2_model_decision=""
+for attempt in 1 2 3; do
+  s2_attempts=$attempt
+  s2_start="$(now_ms)"
+  run_attached "$prompt2" "$work/transcript2.txt"
+  s2_end="$(now_ms)"
+  # Give the server-side review a moment, then poll for the model decision.
+  sleep 2
+  j=0
+  while [ "$j" -lt 20 ]; do
+    s2_model_decision="$(model_decision_lines | tail -n 1)"
+    if [ -n "$s2_model_decision" ]; then
+      break
+    fi
+    sleep 0.5
+    j=$((j + 1))
+  done
+  if [ -n "$s2_model_decision" ]; then
+    break
+  fi
+done
 
+s2_client_ms=$((s2_end - s2_start))
+s2_elapsed="$(decision_elapsed_ms "$s2_model_decision")"
+s1_client_ms=$((s1_end - s1_start))
+
+# ---------------------------------------------------------------------------
+# Reporting
+# ---------------------------------------------------------------------------
 echo
 echo "==> resume_probe events (session ${session_id:-unknown}):"
 grep '"event":"resume_probe"' "$diag" 2>/dev/null | grep "\"sessionID\":\"$session_id\"" || echo "  (none)"
 echo
 echo "==> resume event (newest):"
-echo "$last_resume"
+if [ -n "$last_resume" ]; then
+  echo "$last_resume"
+else
+  echo "  (none — scenario 1 produced no resume event)"
+fi
 echo
 echo "STARTED:$started_line"
 echo
+echo "==> decision events (source / elapsedMs):"
+grep '"event":"decision"' "$diag" 2>/dev/null | while IFS= read -r line; do
+  src="$(printf '%s' "$line" | sed -n 's/.*"source":"\([^"]*\)".*/\1/p')"
+  ms="$(decision_elapsed_ms "$line")"
+  printf '  source=%-14s elapsedMs=%s\n' "${src:-?}" "${ms:-?}"
+done || true
+echo
+echo "TIMING scenario1_client_ms=$s1_client_ms scenario2_client_ms=$s2_client_ms scenario2_attempts=$s2_attempts"
+echo "TIMING scenario2_model_decision_elapsedMs=${s2_elapsed:-none}"
+echo "TIMING note: the model-reviewed elapsedMs (hundreds-to-thousands) is the"
+echo "             window that exceeds opencode's headless auto-reject; the"
+echo "             deterministic policy elapsedMs (single-digit ms) beats it."
+echo
 
-ok=false
-routed=false
-if printf '%s' "$last_resume" | grep -q '"ok":true'; then ok=true; fi
-if printf '%s' "$last_resume" | grep -q '"routing":{[^}]*"agent"'; then routed=true; fi
+# ---------------------------------------------------------------------------
+# Verdict
+# ---------------------------------------------------------------------------
+s1_pass=false
+if [ "$s1_ok" = "true" ] && [ "$s1_routed" = "true" ]; then s1_pass=true; fi
+s2_pass=false
+if [ -n "$s2_model_decision" ]; then s2_pass=true; fi
 
-if [ "$ok" = "true" ] && [ "$routed" = "true" ]; then
-  echo "PASS: continuation accepted (ok:true) and routed to an agent (routing.agent present)."
+if [ "$s1_pass" = "true" ] && [ "$s2_pass" = "true" ]; then
+  echo "PASS: deterministic resume accepted (ok:true) and routed to an agent, AND the"
+  echo "      model review completed (decision event logged) despite losing the reply race."
   exit 0
 fi
 
-echo "FAIL: newest resume event lacks ok:true and/or a routing agent."
-if [ "$ok" = "false" ]; then
-  echo "      The resume prompt was not accepted — see the error detail above."
+echo "FAIL:"
+if [ "$s1_pass" != "true" ]; then
+  echo "      scenario 1: newest resume event lacks ok:true and/or a routing agent."
+  if [ -z "$resume_lines" ]; then
+    echo "      diagnostics exist but contain no 'resume' event (no denial triggered, or the run ended first)."
+    echo "--- all diagnostics ---"
+    cat "$diag"
+    echo "--- transcript (last 40 lines) ---"
+    tail -n 40 "$work/transcript1.txt" 2>/dev/null || true
+  else
+    if [ "$s1_ok" = "false" ]; then
+      echo "      the resume prompt was not accepted — see the error detail above."
+    fi
+    if [ "$s1_routed" = "false" ]; then
+      echo "      the resume event has no routing.agent — the continuation was not routed to an agent."
+    fi
+    if [ "$started_line" = "false" ]; then
+      echo "      note: opencode accepted the prompt but the continuation message never appeared (started:false)."
+    fi
+  fi
 fi
-if [ "$routed" = "false" ]; then
-  echo "      The resume event has no routing.agent — the continuation was not routed to an agent."
-fi
-if [ "$started_line" = "false" ]; then
-  echo "      Note: opencode accepted the prompt but the continuation message never appeared (started:false)."
+if [ "$s2_pass" != "true" ]; then
+  echo "      scenario 2: no model-sourced decision event was written after $s2_attempts attempt(s)."
+  echo "      the model review did not complete — check the serve log for plugin errors."
+  echo "--- serve log (last 40 lines) ---"
+  tail -n 40 "$work/serve.log" 2>/dev/null || true
+  echo "--- transcript (last 40 lines) ---"
+  tail -n 40 "$work/transcript2.txt" 2>/dev/null || true
 fi
 exit 1
