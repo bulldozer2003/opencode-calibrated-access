@@ -776,7 +776,7 @@ describe("installReviewer", () => {
     rmSync(path, { force: true })
   })
 
-  test("routes a fast-deny resume from one message fetch without resolving the root session", async () => {
+  test("routes a hard-deny resume from one message fetch without resolving the root session", async () => {
     const path = diagPath()
     const prompts: Array<{ path: { id: string }; body: { parts: unknown[]; agent?: string; model?: unknown } }> = []
     const runtime = makeRuntime(
@@ -802,7 +802,7 @@ describe("installReviewer", () => {
       return "root1"
     }
     installReviewer(runtime.context, { client: { reply: async () => "replied" }, sleep: async () => {}, idleSleep: async () => {} })
-    await runtime.emit("permission.v2.asked", askedEvent("req-fast-routing", "echo $API_KEY"))
+    await runtime.emit("permission.v2.asked", askedEvent("req-fast-routing", "rm -rf /"))
     await waitForEvent(path, "resume")
     expect(rootCalls).toBe(0)
     expect(prompts).toHaveLength(1)

@@ -38,6 +38,18 @@ export interface Decision {
   alternatives?: string[]
 }
 
+/**
+ * A deterministic pre-check result. Findings are caution evidence handed to the
+ * judge, not verdicts: `caution` findings force a minimum `ask` outcome in the
+ * matrix floor, while `hard` findings remain always-enforced blocks (only
+ * catastrophic deletes today, pending the corpus verdict).
+ */
+export interface DeterministicFinding {
+  code: "secret_exposure" | "catastrophic_delete"
+  message: string
+  severity: "hard" | "caution"
+}
+
 export interface ReviewInput {
   request: {
     action: string

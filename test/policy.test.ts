@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { applyDeterministicPolicy, detectSecretExposure, fastDeny } from "../src/policy.ts"
+import { applyDeterministicPolicy, detectSecretExposure, fastFindings, hardFindingDecision } from "../src/policy.ts"
 import type { ReviewInput } from "../src/types.ts"
 
 function input(command: string): ReviewInput {
@@ -17,9 +17,10 @@ describe("applyDeterministicPolicy", () => {
     expect(applyDeterministicPolicy(input("rm -rf $HOME"))?.reasonCode).toBe("catastrophic_delete")
   })
 
-  test("allows routine local commands", () => {
+  test("does not fast-path routine local commands — they reach the model", () => {
     for (const cmd of ["git status", "pnpm test", "cargo check", "go test ./...", "npm run lint", "bun test", "pytest", "ruff check", "tsc"]) {
-      expect(applyDeterministicPolicy(input(cmd))?.kind).toBe("allow")
+      expect(applyDeterministicPolicy(input(cmd))).toBeNull()
+      expect(fastFindings({ action: "bash", resources: [cmd] })).toEqual([])
     }
   })
 
@@ -110,32 +111,50 @@ describe("applyDeterministicPolicy", () => {
   })
 })
 
-describe("fastDeny", () => {
-  test("hits secret_exposure for the canonical .env read", () => {
-    const decision = fastDeny({ action: "bash", resources: ["cat .env"] })
-    expect(decision?.kind).toBe("deny")
-    expect(decision?.reasonCode).toBe("secret_exposure")
-    expect(decision?.alternatives?.length).toBeGreaterThanOrEqual(3)
+describe("fastFindings", () => {
+  test("returns a caution secret_exposure finding for the canonical .env read", () => {
+    const findings = fastFindings({ action: "bash", resources: ["cat .env"] })
+    expect(findings).toHaveLength(1)
+    expect(findings[0]!.code).toBe("secret_exposure")
+    expect(findings[0]!.severity).toBe("caution")
+    expect(findings[0]!.message).toContain(".env")
   })
 
-  test("hits catastrophic_delete for the canonical rm-rf patterns", () => {
+  test("returns a caution secret_exposure finding for a secret env var read", () => {
+    const findings = fastFindings({ action: "bash", resources: ["echo $API_KEY"] })
+    expect(findings.map((finding) => finding.code)).toEqual(["secret_exposure"])
+    expect(findings[0]!.severity).toBe("caution")
+    expect(findings[0]!.message).toContain("API_KEY")
+  })
+
+  test("marks catastrophic deletes as hard findings", () => {
     for (const command of ["rm -rf /", "sudo rm -rf /", "rm -rf ~", "rm -rf $HOME"]) {
-      expect(fastDeny({ action: "bash", resources: [command] })?.reasonCode).toBe("catastrophic_delete")
+      const findings = fastFindings({ action: "bash", resources: [command] })
+      expect(findings.map((finding) => finding.code)).toContain("catastrophic_delete")
+      expect(findings.find((finding) => finding.code === "catastrophic_delete")!.severity).toBe("hard")
     }
   })
 
-  test("returns null for routine allows (allow codes are context-free but never fast-denied)", () => {
+  test("returns no findings for routine commands", () => {
     for (const command of ["git status", "bun test", "npm run lint"]) {
-      expect(fastDeny({ action: "bash", resources: [command] })).toBeNull()
+      expect(fastFindings({ action: "bash", resources: [command] })).toEqual([])
     }
   })
 
-  test("returns null for commands whose only code needs context", () => {
-    expect(fastDeny({ action: "bash", resources: ["touch /tmp/example"] })).toBeNull()
+  test("returns no findings for commands whose only code needs context", () => {
+    expect(fastFindings({ action: "bash", resources: ["touch /tmp/example"] })).toEqual([])
   })
 
-  test("returns null for non-bash actions", () => {
-    expect(fastDeny({ action: "external_directory", resources: ["/home/user/.ssh/*"] })).toBeNull()
+  test("returns no findings for non-bash actions", () => {
+    expect(fastFindings({ action: "external_directory", resources: ["/home/user/.ssh/*"] })).toEqual([])
+  })
+
+  test("a secret finding converts to a deny with safer alternatives", () => {
+    const finding = fastFindings({ action: "bash", resources: ["cat .env"] })[0]!
+    const decision = hardFindingDecision(finding)
+    expect(decision.kind).toBe("deny")
+    expect(decision.reasonCode).toBe("secret_exposure")
+    expect(decision.alternatives?.length).toBeGreaterThanOrEqual(3)
   })
 })
 
@@ -241,20 +260,18 @@ describe("detectSecretExposure — allowed secret-file uses", () => {
   }
 })
 
-describe("applyDeterministicPolicy — secret exposure", () => {
-  test("denies secret exposure and attaches safer alternatives", () => {
-    const decision = applyDeterministicPolicy(input("echo $API_KEY"))
-    expect(decision?.kind).toBe("deny")
-    expect(decision?.reasonCode).toBe("secret_exposure")
-    expect(decision?.alternatives?.length).toBeGreaterThanOrEqual(3)
+describe("applyDeterministicPolicy — secret exposure findings", () => {
+  test("does not short-circuit secret exposure; the finding reaches the judge", () => {
+    expect(applyDeterministicPolicy(input("echo $API_KEY"))).toBeNull()
   })
 
-  test("denies secret-file reads and version-control staging with safer alternatives", () => {
+  test("does not short-circuit secret-file reads or staging; findings reach the judge", () => {
     for (const command of ["cat .env", "git add .env"]) {
-      const decision = applyDeterministicPolicy(input(command))
-      expect(decision?.kind).toBe("deny")
-      expect(decision?.reasonCode).toBe("secret_exposure")
-      expect(decision?.alternatives?.length).toBeGreaterThanOrEqual(3)
+      expect(applyDeterministicPolicy(input(command))).toBeNull()
+      const findings = fastFindings({ action: "bash", resources: [command] })
+      expect(findings.map((finding) => finding.code)).toEqual(["secret_exposure"])
+      expect(findings[0]!.severity).toBe("caution")
+      expect(hardFindingDecision(findings[0]!).alternatives?.length).toBeGreaterThanOrEqual(3)
     }
   })
 })

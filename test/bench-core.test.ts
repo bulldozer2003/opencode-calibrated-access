@@ -44,6 +44,16 @@ describe("bench-core parseBenchArgs", () => {
   test("ignores unknown flags rather than crashing", () => {
     expect(parseBenchArgs(["--verbose", "positional"]).repeats).toBe(5)
   })
+
+  test("defaults to raw findings mode and parses --findings", () => {
+    expect(parseBenchArgs([]).findings).toBe("raw")
+    expect(parseBenchArgs(["--findings=enabled"]).findings).toBe("enabled")
+    expect(parseBenchArgs(["--findings=raw"]).findings).toBe("raw")
+  })
+
+  test("rejects an unknown --findings value", () => {
+    expect(() => parseBenchArgs(["--findings=maybe"])).toThrow()
+  })
 })
 
 describe("bench-core assessOutcome", () => {
@@ -61,6 +71,16 @@ describe("bench-core assessOutcome", () => {
 
   test("no confident signal is unjudged", () => {
     expect(assessOutcome(scores({}, 0.1))).toBe("unjudged")
+  })
+
+  test("a finding floors the outcome at ask", () => {
+    const finding = {
+      code: "secret_exposure" as const,
+      severity: "caution" as const,
+      message: "caution: command matches a secret-file-read pattern (.env)",
+    }
+    expect(assessOutcome(scores(), [finding])).toBe("ask")
+    expect(assessOutcome(scores({ destructive: 0.9 }), [finding])).toBe("block")
   })
 })
 

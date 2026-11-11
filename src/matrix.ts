@@ -1,4 +1,4 @@
-import type { RiskSignalName, SignalScores } from "./types.ts"
+import type { DeterministicFinding, RiskSignalName, SignalScores } from "./types.ts"
 import { SIGNAL_NAMES } from "./types.ts"
 
 const MIN_CONFIDENCE = 0.5
@@ -17,8 +17,8 @@ export const DEFAULT_SIGNAL_THRESHOLDS = {
 export type SignalAssessment =
   | { kind: "allow"; reasonCode: "signals_below_threshold"; reason: string }
   | { kind: "allow"; reasonCode: "user_requested_override"; reason: string }
-  | { kind: "ask"; signal: RiskSignalName; probability: number; reason: string }
-  | { kind: "block"; signal: RiskSignalName; probability: number; reason: string }
+  | { kind: "ask"; signal: RiskSignalName; probability: number; reason: string; finding?: boolean }
+  | { kind: "block"; signal: RiskSignalName; probability: number; reason: string; finding?: boolean }
   | { kind: "unjudged"; reason: string }
 
 const RISK_SIGNALS = SIGNAL_NAMES.filter((name): name is RiskSignalName => name !== "user_requested")
@@ -35,16 +35,38 @@ function highest(entries: Array<{ signal: RiskSignalName; probability: number }>
   return best
 }
 
+function findingSignal(findings: DeterministicFinding[]): RiskSignalName {
+  const match = findings.find((finding) => (RISK_SIGNALS as readonly string[]).includes(finding.code))
+  return (match?.code as RiskSignalName | undefined) ?? "secret_exposure"
+}
+
+function findingReason(findings: DeterministicFinding[], summary: string): string {
+  const codes = findings.map((finding) => finding.code).join(", ")
+  const messages = findings.map((finding) => finding.message).join("; ")
+  return `Deterministic finding (${codes}) sets a minimum outcome of ask: ${messages}. ${summary}.`
+}
+
 export function assessSignals(
   scores: SignalScores,
   thresholds: Record<RiskSignalName, { block: number; ask: number }>,
+  findings: DeterministicFinding[] = [],
 ): SignalAssessment {
   const considered = RISK_SIGNALS.filter((signal) => isConsidered(scores.signals[signal])).map((signal) => ({
     signal,
     probability: scores.signals[signal].probability,
   }))
+  const hasFinding = findings.length > 0
 
   if (considered.length === 0) {
+    if (hasFinding) {
+      return {
+        kind: "ask",
+        signal: findingSignal(findings),
+        probability: 0,
+        finding: true,
+        reason: findingReason(findings, "no risk signal reached the confidence floor"),
+      }
+    }
     return {
       kind: "unjudged",
       reason: "No risk signal reached the 0.5 confidence floor; the request could not be judged.",
@@ -58,6 +80,7 @@ export function assessSignals(
       kind: "block",
       signal: blocker.signal,
       probability: blocker.probability,
+      ...(hasFinding ? { finding: true } : {}),
       reason: `Signal "${blocker.signal}" probability ${blocker.probability.toFixed(2)} meets the block threshold ${thresholds[blocker.signal].block}.`,
     }
   }
@@ -66,7 +89,7 @@ export function assessSignals(
   const asker = highest(askers)
   if (asker) {
     const userRequested = scores.signals.user_requested
-    if (isConsidered(userRequested) && userRequested.probability >= USER_REQUESTED_OVERRIDE_THRESHOLD) {
+    if (!hasFinding && isConsidered(userRequested) && userRequested.probability >= USER_REQUESTED_OVERRIDE_THRESHOLD) {
       return {
         kind: "allow",
         reasonCode: "user_requested_override",
@@ -77,12 +100,24 @@ export function assessSignals(
       kind: "ask",
       signal: asker.signal,
       probability: asker.probability,
-      reason: `Signal "${asker.signal}" probability ${asker.probability.toFixed(2)} meets the ask threshold ${thresholds[asker.signal].ask}.`,
+      ...(hasFinding ? { finding: true } : {}),
+      reason: hasFinding
+        ? findingReason(findings, `highest signal "${asker.signal}" at ${asker.probability.toFixed(2)}`)
+        : `Signal "${asker.signal}" probability ${asker.probability.toFixed(2)} meets the ask threshold ${thresholds[asker.signal].ask}.`,
     }
   }
 
   const top = highest(considered)
   const summary = top ? `highest signal "${top.signal}" at ${top.probability.toFixed(2)}` : "no signal above zero"
+  if (hasFinding) {
+    return {
+      kind: "ask",
+      signal: findingSignal(findings),
+      probability: top?.probability ?? 0,
+      finding: true,
+      reason: findingReason(findings, summary),
+    }
+  }
   return {
     kind: "allow",
     reasonCode: "signals_below_threshold",

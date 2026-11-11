@@ -201,3 +201,74 @@ describe("assessSignals", () => {
     expect(result.signal).toBe("user_prohibited")
   })
 })
+
+describe("assessSignals — deterministic finding floor", () => {
+  const finding = {
+    code: "secret_exposure" as const,
+    severity: "caution" as const,
+    message: "caution: command matches a secret-file-read pattern (.env)",
+  }
+
+  test("a finding turns a below-threshold allow into ask", () => {
+    const result = assessSignals(scores({ destructive: { probability: 0.2, confidence: 0.9 } }), DEFAULT_SIGNAL_THRESHOLDS, [finding])
+    expect(result.kind).toBe("ask")
+    if (result.kind !== "ask") throw new Error("expected ask")
+    expect(result.finding).toBe(true)
+    expect(result.reason).toContain("Deterministic finding")
+    expect(result.reason).toContain("secret_exposure")
+  })
+
+  test("a finding blocks the user_requested ask→allow downgrade", () => {
+    const withoutFinding = assessSignals(
+      scores({
+        destructive: { probability: 0.65, confidence: 0.9 },
+        user_requested: { probability: 0.95, confidence: 0.95 },
+      }),
+      DEFAULT_SIGNAL_THRESHOLDS,
+    )
+    expect(withoutFinding.kind).toBe("allow")
+
+    const withFinding = assessSignals(
+      scores({
+        destructive: { probability: 0.65, confidence: 0.9 },
+        user_requested: { probability: 0.95, confidence: 0.95 },
+      }),
+      DEFAULT_SIGNAL_THRESHOLDS,
+      [finding],
+    )
+    expect(withFinding.kind).toBe("ask")
+    if (withFinding.kind !== "ask") throw new Error("expected ask")
+    expect(withFinding.finding).toBe(true)
+  })
+
+  test("a finding turns an unjudged request into ask", () => {
+    const result = assessSignals(
+      scores({
+        destructive: { probability: 1, confidence: 0.4 },
+        secret_exposure: { probability: 1, confidence: 0.4 },
+        exfiltration: { probability: 1, confidence: 0.4 },
+        prompt_injection: { probability: 1, confidence: 0.4 },
+        scope_creep: { probability: 1, confidence: 0.4 },
+        user_prohibited: { probability: 1, confidence: 0.4 },
+        severity: { probability: 1, confidence: 0.4 },
+      }),
+      DEFAULT_SIGNAL_THRESHOLDS,
+      [finding],
+    )
+    expect(result.kind).toBe("ask")
+    if (result.kind !== "ask") throw new Error("expected ask")
+    expect(result.finding).toBe(true)
+  })
+
+  test("finding + model agreement blocks rather than asks", () => {
+    const result = assessSignals(scores({ secret_exposure: { probability: 0.9, confidence: 0.9 } }), DEFAULT_SIGNAL_THRESHOLDS, [finding])
+    expect(result.kind).toBe("block")
+    if (result.kind !== "block") throw new Error("expected block")
+    expect(result.finding).toBe(true)
+  })
+
+  test("a finding cannot be silently allowed", () => {
+    const result = assessSignals(scores({}), DEFAULT_SIGNAL_THRESHOLDS, [finding])
+    expect(result.kind).not.toBe("allow")
+  })
+})

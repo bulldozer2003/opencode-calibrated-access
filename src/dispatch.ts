@@ -1,7 +1,8 @@
-import type { CalibratedConfig, Decision, PermissionRequest, ResumeRouting, ReviewerClient, RuntimeContext, SignalScores } from "./types.ts"
-import { applyDeterministicPolicy, fastDeny } from "./policy.ts"
+import type { CalibratedConfig, Decision, DeterministicFinding, PermissionRequest, ResumeRouting, ReviewerClient, RuntimeContext, SignalScores } from "./types.ts"
+import { applyDeterministicPolicy, fastFindings, hardFindingDecision } from "./policy.ts"
 import { assessSignals } from "./matrix.ts"
 import { rateCommand, type FetchFn } from "./risk-rater.ts"
+import { PROMPT_VERSION } from "./prompt.ts"
 import { SessionApprovalCache } from "./cache.ts"
 import { buildContinuationMessage } from "./resume.ts"
 import { writeDiagnostic } from "./diagnostics.ts"
@@ -22,22 +23,24 @@ export async function reviewAndReply(
 ): Promise<void> {
   let routing: ResumeRouting = {}
   try {
-    const fast = fastDeny({ action: request.action, resources: [...request.resources] })
-    if (fast) {
+    const findings = fastFindings({ action: request.action, resources: [...request.resources] })
+    const hard = findings.find((finding) => finding.severity === "hard")
+    if (hard) {
+      const hardDecision = hardFindingDecision(hard)
       const shadowFast =
-        config.mode === "shadow" && !ALWAYS_ENFORCED_POLICY_CODES.has(fast.reasonCode)
-          ? { kind: "allow" as const, reasonCode: `shadow_${fast.reasonCode}`, reason: fast.reason }
+        config.mode === "shadow" && !ALWAYS_ENFORCED_POLICY_CODES.has(hardDecision.reasonCode)
+          ? { kind: "allow" as const, reasonCode: `shadow_${hardDecision.reasonCode}`, reason: hardDecision.reason }
           : undefined
-      const effectiveFast = shadowFast ?? fast
+      const effectiveFast = shadowFast ?? hardDecision
       if (shadowFast) {
         context.showToast?.({
           title: "Shadow mode",
-          message: `Shadow mode: would have blocked (${fast.reasonCode})`,
+          message: `Shadow mode: would have blocked (${hardDecision.reasonCode})`,
           variant: "info",
           duration: 5_000,
         })
       }
-      writeDiag(config, request, startedAt, effectiveFast, "policy", undefined)
+      writeDiag(config, request, startedAt, effectiveFast, "policy", undefined, findings)
       if (effectiveFast.kind === "allow") {
         await client.reply({ sessionID: request.sessionID, requestID: request.id, reply: "once", protocol: request.protocol })
       } else {
@@ -92,6 +95,7 @@ export async function reviewAndReply(
     }
 
     const isRetry = detectRetryAfterDenial(rawMessages)
+    const cautions = findings.filter((finding) => finding.severity === "caution")
 
     let decision: Decision
     let signals: SignalScores | undefined
@@ -100,7 +104,7 @@ export async function reviewAndReply(
     } else if (cached) {
       decision = cached
     } else {
-      const model = await modelDecision(context, request, messages, config, isRetry, fetchFn)
+      const model = await modelDecision(context, request, messages, config, isRetry, cautions, fetchFn)
       decision = model.decision
       signals = model.signals
     }
@@ -109,7 +113,7 @@ export async function reviewAndReply(
     // run`'s headless client auto-rejects on `permission.asked` without waiting
     // for the plugin. Record the completed review for calibration, but never
     // reply or cache an approval for a permission that is already settled.
-    writeDiag(config, request, startedAt, decision, sourceLabel(effectivePolicy, cached, config), signals)
+    writeDiag(config, request, startedAt, decision, sourceLabel(effectivePolicy, cached, config), signals, cautions)
     if (signal.aborted) return
 
     if (config.sessionApprovals && cacheKey && decision.kind === "allow" && !decision.reasonCode.startsWith("shadow_")) {
@@ -155,10 +159,11 @@ async function modelDecision(
   userMessages: string[],
   config: CalibratedConfig,
   isRetry: boolean,
+  findings: DeterministicFinding[],
   fetchFn?: FetchFn,
 ): Promise<{ decision: Decision; signals: SignalScores }> {
-  const raw = await rateCommand(request.resources.join(" && "), userMessages, config, isRetry, fetchFn)
-  const assessment = assessSignals(raw, config.signalThresholds)
+  const raw = await rateCommand(request.resources.join(" && "), userMessages, config, isRetry, fetchFn, findings)
+  const assessment = assessSignals(raw, config.signalThresholds, findings)
 
   if (config.mode === "shadow") {
     if (assessment.kind === "block" || assessment.kind === "ask") {
@@ -199,23 +204,31 @@ async function modelDecision(
 
   if (assessment.kind === "block") {
     const reasonCode = `signal_block_${assessment.signal}`
+    const finding = findings.find((entry) => entry.code === assessment.signal)
+    const findingAlternatives = finding ? alternativesFor(finding.code) : undefined
     return {
       decision: {
         kind: "deny",
         reasonCode,
-        reason: `Signal "${assessment.signal}" at ${assessment.probability.toFixed(2)} meets the block threshold; blocked.`,
-        alternatives: alternativesFor(reasonCode),
+        reason: finding
+          ? `${finding.message} The judge's signal "${assessment.signal}" at ${assessment.probability.toFixed(2)} meets the block threshold; the deterministic finding and the judge agree, so the action is blocked.`
+          : `Signal "${assessment.signal}" at ${assessment.probability.toFixed(2)} meets the block threshold; blocked.`,
+        alternatives: findingAlternatives && findingAlternatives.length > 0 ? findingAlternatives : alternativesFor(reasonCode),
       },
       signals: raw,
     }
   }
 
   if (assessment.kind === "ask") {
+    const findingAlternatives = findingAlternativesFor(assessment.signal, findings)
     return {
       decision: {
         kind: "deny",
         reasonCode: `signal_ask_${assessment.signal}`,
-        reason: `Signal "${assessment.signal}" at ${assessment.probability.toFixed(2)} meets the ask threshold; confirm with the user before retrying.`,
+        reason: assessment.finding
+          ? assessment.reason
+          : `Signal "${assessment.signal}" at ${assessment.probability.toFixed(2)} meets the ask threshold; confirm with the user before retrying.`,
+        ...(findingAlternatives ? { alternatives: findingAlternatives } : {}),
       },
       signals: raw,
     }
@@ -225,6 +238,13 @@ async function modelDecision(
     decision: { kind: "allow", reasonCode: "signals_below_threshold", reason: assessment.reason },
     signals: raw,
   }
+}
+
+function findingAlternativesFor(signal: string, findings: DeterministicFinding[]): string[] | undefined {
+  const finding = findings.find((entry) => entry.code === signal)
+  if (!finding) return undefined
+  const alternatives = alternativesFor(finding.code)
+  return alternatives.length > 0 ? alternatives : undefined
 }
 
 function reusableCacheKey(request: PermissionRequest, rootSessionID: string): string | undefined {
@@ -245,19 +265,23 @@ function writeDiag(
   decision: Decision,
   source: string,
   signals: SignalScores | undefined,
+  findings: DeterministicFinding[] = [],
 ): void {
   writeDiagnostic(config.diagnosticsPath, {
     timestamp: new Date().toISOString(),
     requestID: request.id,
     sessionID: request.sessionID,
     action: request.action,
+    command: request.resources.join(" && "),
     elapsedMs: Math.round(performance.now() - startedAt),
     event: "decision",
     source,
     mode: config.mode,
+    promptVersion: PROMPT_VERSION,
     decision: decision.kind,
     reasonCode: decision.reasonCode,
     reason: decision.reason,
+    ...(findings.length > 0 ? { findings: findings.map((finding) => ({ code: finding.code, severity: finding.severity, message: finding.message })) } : {}),
     ...(signals ? { signals: signals.signals } : {}),
     ...(signals?.usage !== undefined ? { usage: signals.usage } : {}),
     ...(signals?.cost !== undefined ? { cost: signals.cost } : {}),

@@ -105,6 +105,7 @@ async function runSpy(
   command: string,
   messages: unknown[] = [],
   options: SpyOptions = {},
+  fetchFn: FetchFn = failingFetch(),
 ): Promise<{ harness: SpyHarness; decision: Record<string, unknown> }> {
   const path = `/tmp/calibrated-access-dispatch-${crypto.randomUUID()}.jsonl`
   const harness = makeSpyHarness(messages, options)
@@ -117,7 +118,7 @@ async function runSpy(
     new SessionApprovalCache(),
     performance.now(),
     new AbortController().signal,
-    failingFetch(),
+    fetchFn,
   )
   const decision = JSON.parse(readFileSync(path, "utf-8").trim().split("\n").pop()!)
   unlinkSync(path)
@@ -262,10 +263,19 @@ describe("dispatch — diagnostics usage/cost", () => {
   })
 
   test("does not add usage/cost to a policy-sourced decision", async () => {
-    const { decision } = await runCommandWithDiagnostics("shadow", "git status", okFetch(systemOneBody()))
+    const { decision } = await runCommandWithDiagnostics("shadow", "rm -rf /", okFetch(systemOneBody()))
     expect(decision.source).toBe("policy")
     expect("usage" in decision).toBe(false)
     expect("cost" in decision).toBe(false)
+  })
+
+  test("records command text, promptVersion, and findings on a model decision", async () => {
+    const { decision } = await runCommandWithDiagnostics("enforce", "cat .env", okFetch(systemOneBody()))
+    expect(decision.command).toBe("cat .env")
+    expect(decision.promptVersion).toBe("2")
+    const findings = decision.findings as Array<Record<string, unknown>>
+    expect(findings.map((finding) => finding.code)).toEqual(["secret_exposure"])
+    expect(findings[0]!.severity).toBe("caution")
   })
 })
 
@@ -444,7 +454,7 @@ describe("dispatch — deterministic secret exposure", () => {
     expect(resumes[0]!.reason).toContain("Safer alternatives:")
   })
 
-  test("enforce mode still allows routine commands via policy", async () => {
+  test("enforce mode allows routine commands through the model (no allow-list)", async () => {
     const { replies } = await runCommand("enforce", "git status", okFetch(systemOneBody()))
     expect(replies[0]!.reply).toBe("once")
   })
@@ -528,12 +538,12 @@ describe("dispatch — fast-deny routes resume after replying", () => {
         parts: [],
       },
     ]
-    const { harness, decision } = await runSpy("enforce", "echo $API_KEY", messages)
+    const { harness, decision } = await runSpy("enforce", "rm -rf /", messages)
     expect(harness.rootCalls()).toBe(0)
     expect(harness.listCalls()).toBe(1)
     expect(harness.order.indexOf("reply")).toBeLessThan(harness.order.indexOf("messages"))
     expect(harness.replies[0]!.reply).toBe("reject")
-    expect(harness.replies[0]!.message).toContain("API_KEY")
+    expect(harness.replies[0]!.message).toContain("catastrophic")
     expect(harness.resumes).toHaveLength(1)
     expect(harness.resumes[0]!.routing).toEqual({
       agent: "builder",
@@ -542,7 +552,9 @@ describe("dispatch — fast-deny routes resume after replying", () => {
     })
     expect(decision.event).toBe("decision")
     expect(decision.source).toBe("policy")
-    expect(decision.reasonCode).toBe("secret_exposure")
+    expect(decision.reasonCode).toBe("catastrophic_delete")
+    expect(decision.command).toBe("rm -rf /")
+    expect(decision.promptVersion).toBe("2")
   })
 
   test("falls back to the last assistant agent when no user routing is present", async () => {
@@ -556,7 +568,7 @@ describe("dispatch — fast-deny routes resume after replying", () => {
   })
 
   test("still resumes without routing when the messages fetch fails", async () => {
-    const { harness } = await runSpy("enforce", "echo $API_KEY", [], { failMessages: true })
+    const { harness } = await runSpy("enforce", "rm -rf /", [], { failMessages: true })
     expect(harness.rootCalls()).toBe(0)
     expect(harness.listCalls()).toBe(1)
     expect(harness.replies[0]!.reply).toBe("reject")
@@ -564,16 +576,18 @@ describe("dispatch — fast-deny routes resume after replying", () => {
     expect(harness.resumes[0]!.routing).toEqual({})
   })
 
-  test("shadow mode allows a fast-deny secret exposure and toasts without fetching messages", async () => {
-    const { harness, decision } = await runSpy("shadow", "echo $API_KEY")
-    expect(harness.rootCalls()).toBe(0)
-    expect(harness.listCalls()).toBe(0)
+  test("shadow mode sends a secret exposure finding to the judge and toasts the would-ask", async () => {
+    const { harness, decision } = await runSpy("shadow", "echo $API_KEY", [], {}, okFetch(systemOneBody()))
+    expect(harness.rootCalls()).toBe(1)
+    expect(harness.listCalls()).toBe(1)
     expect(harness.replies[0]!.reply).toBe("once")
     expect(harness.replies[0]!.message).toBeUndefined()
     expect(harness.resumes).toHaveLength(0)
     expect(harness.toasts.some((t) => /shadow mode/i.test(t.message) && /secret_exposure/.test(t.message))).toBe(true)
-    expect(decision.source).toBe("policy")
-    expect(decision.reasonCode).toBe("shadow_secret_exposure")
+    expect(decision.source).toBe("typesafe")
+    expect(decision.reasonCode).toBe("shadow_ask")
+    const findings = decision.findings as Array<Record<string, unknown>>
+    expect(findings[0]!.code).toBe("secret_exposure")
   })
 
   test("still enforces a fast-deny catastrophic delete in shadow mode and routes the resume", async () => {
