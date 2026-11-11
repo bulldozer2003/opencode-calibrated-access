@@ -64,7 +64,9 @@ export function installReviewer(context: RuntimeContext, overrides: PluginOverri
     if (pluginReplies.delete(reply.requestID)) return
     if (!request || !config.sessionApprovals) return
     if (reply.reply !== "always" || request.always.length === 0) return
-    cache.add(reply.sessionID, request.action, request.always)
+    const rootSessionID = await resolveRootSessionID(context, request.sessionID)
+    if (!rootSessionID) return
+    cache.add(rootSessionID, request.action, request.always)
   }
 
   const offReplied = context.data.on("permission.v2.replied", handleReplied)
@@ -110,6 +112,14 @@ export function installReviewer(context: RuntimeContext, overrides: PluginOverri
 }
 
 type ResumeOutcome = { ok: true } | { ok: false; error: unknown }
+
+async function resolveRootSessionID(context: RuntimeContext, sessionID: string): Promise<string | null> {
+  try {
+    return await context.data.session.root(sessionID)
+  } catch {
+    return null
+  }
+}
 
 function isErrorResult(result: unknown): boolean {
   return typeof result === "object" && result !== null && Boolean((result as { error?: unknown }).error)

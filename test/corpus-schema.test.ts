@@ -4,6 +4,8 @@ import { join } from "path"
 import {
   CORPUS_CATEGORIES,
   CORPUS_EXPECTED,
+  CORPUS_OPTIONAL_KEYS,
+  CORPUS_REQUIRED_KEYS,
   loadCorpus,
   validateCorpusEntry,
   type CorpusEntry,
@@ -11,6 +13,67 @@ import {
 
 const CORPUS_DIR = join(import.meta.dir, "..", "benchmarks", "corpus")
 const SCHEMA_PATH = join(import.meta.dir, "..", "benchmarks", "corpus.schema.json")
+
+interface JsonSchema {
+  type?: string
+  required?: string[]
+  properties?: Record<string, JsonSchema>
+  additionalProperties?: boolean
+  enum?: unknown[]
+  items?: JsonSchema
+  minItems?: number
+  minLength?: number
+}
+
+function loadSchema(): JsonSchema {
+  return JSON.parse(readFileSync(SCHEMA_PATH, "utf-8")) as JsonSchema
+}
+
+/**
+ * Interpret the subset of JSON Schema the corpus schema actually uses (type,
+ * required, properties, additionalProperties, enum, items, minItems, minLength)
+ * so the corpus files are validated against the real schema instead of a
+ * hand-rolled mirror. No third-party validator dependency.
+ */
+function validateAgainstSchema(value: unknown, schema: JsonSchema, path = ""): string[] {
+  const errors: string[] = []
+  const at = (message: string): string => (path ? `${path}: ${message}` : message)
+
+  if (schema.type === "object") {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return [at("must be an object")]
+    const record = value as Record<string, unknown>
+    for (const key of schema.required ?? []) {
+      if (!(key in record)) errors.push(at(`missing required property "${key}"`))
+    }
+    const properties = schema.properties ?? {}
+    for (const [key, propSchema] of Object.entries(properties)) {
+      if (key in record) errors.push(...validateAgainstSchema(record[key], propSchema, path ? `${path}.${key}` : key))
+    }
+    if (schema.additionalProperties === false) {
+      for (const key of Object.keys(record)) {
+        if (!(key in properties)) errors.push(at(`unexpected additional property "${key}"`))
+      }
+    }
+  } else if (schema.type === "array") {
+    if (!Array.isArray(value)) return [at("must be an array")]
+    if (schema.minItems !== undefined && value.length < schema.minItems) {
+      errors.push(at(`must contain at least ${schema.minItems} items`))
+    }
+    if (schema.items) {
+      value.forEach((item, index) => errors.push(...validateAgainstSchema(item, schema.items!, `${path}[${index}]`)))
+    }
+  } else if (schema.type === "string") {
+    if (typeof value !== "string") return [at("must be a string")]
+    if (schema.minLength !== undefined && value.length < schema.minLength) {
+      errors.push(at(`must be at least ${schema.minLength} characters`))
+    }
+  }
+
+  if (schema.enum && !schema.enum.includes(value)) {
+    errors.push(at(`must be one of: ${schema.enum.join(", ")}`))
+  }
+  return errors
+}
 
 describe("corpus schema validator", () => {
   const valid: CorpusEntry = {
@@ -52,6 +115,10 @@ describe("corpus schema validator", () => {
   test("rejects an unknown category", () => {
     expect(validateCorpusEntry({ ...valid, category: "spicy" })).not.toEqual([])
   })
+
+  test("rejects an entry with an unexpected additional property", () => {
+    expect(validateCorpusEntry({ ...valid, unexpected: true })).not.toEqual([])
+  })
 })
 
 describe("benchmarks corpus", () => {
@@ -79,6 +146,38 @@ describe("benchmarks corpus", () => {
     for (const entry of entries) {
       expect(validateCorpusEntry(entry), `${entry.id} failed validation`).toEqual([])
     }
+  })
+
+  test("every corpus entry validates against the JSON Schema file", () => {
+    const schema = loadSchema()
+    const entries = loadCorpus(CORPUS_DIR)
+    expect(entries.length).toBeGreaterThan(0)
+    for (const entry of entries) {
+      expect(validateAgainstSchema(entry, schema), `${entry.id} failed JSON Schema validation`).toEqual([])
+    }
+  })
+
+  test("the JSON Schema itself rejects additional properties and bad enum values", () => {
+    const schema = loadSchema()
+    const entry = { id: "ok", command: "ls", userContext: [], expected: "allow", category: "routine" }
+    expect(validateAgainstSchema({ ...entry, unexpected: true }, schema)).not.toEqual([])
+    expect(validateAgainstSchema({ ...entry, expected: "maybe" }, schema)).not.toEqual([])
+    expect(validateAgainstSchema({ ...entry, category: "spicy" }, schema)).not.toEqual([])
+    expect(validateAgainstSchema({ ...entry, userContext: [1, 2] }, schema)).not.toEqual([])
+    expect(validateAgainstSchema(entry, schema)).toEqual([])
+  })
+
+  test("the TS mirror and the JSON Schema cannot drift silently", () => {
+    const schema = loadSchema()
+    const properties = schema.properties ?? {}
+    const expectedEnum = (properties.expected?.enum ?? []) as string[]
+    const categoryEnum = (properties.category?.enum ?? []) as string[]
+    expect([...(schema.required ?? [])].sort()).toEqual([...CORPUS_REQUIRED_KEYS].sort())
+    expect(Object.keys(properties).sort()).toEqual([...CORPUS_REQUIRED_KEYS, ...CORPUS_OPTIONAL_KEYS].sort())
+    expect([...CORPUS_EXPECTED] as string[]).toEqual(expectedEnum)
+    expect([...CORPUS_CATEGORIES] as string[]).toEqual(categoryEnum)
+    expect(schema.additionalProperties).toBe(false)
+    expect(properties.userContext?.items?.type).toBe("string")
   })
 
   test("scenario ids are globally unique", () => {

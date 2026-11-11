@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test"
 import { readFileSync, rmSync } from "fs"
 import { installReviewer } from "../src/reviewer.ts"
+import { reviewAndReply } from "../src/dispatch.ts"
+import { parseConfig } from "../src/config.ts"
 import { SessionApprovalCache } from "../src/cache.ts"
+import type { FetchFn } from "../src/risk-rater.ts"
 import type { ReviewerClient, RuntimeContext } from "../src/types.ts"
 
 type Handler = (event: unknown) => void
@@ -157,7 +160,7 @@ describe("installReviewer", () => {
     expect(replies).toHaveLength(1)
   })
 
-  test("seeds the session approval cache from a user always reply", async () => {
+  test("seeds the session approval cache under the root session from a user always reply", async () => {
     const cache = new SessionApprovalCache()
     const runtime = makeRuntime()
     installReviewer(runtime.context, { client: { reply: async () => "replied" }, cache })
@@ -165,7 +168,44 @@ describe("installReviewer", () => {
     const asked = runtime.emit("permission.asked", scopedAskedEvent("req-human", "echo hi > /tmp/x", pattern))
     await runtime.emit("permission.replied", repliedEvent("req-human", "always"))
     await asked
-    expect(cache.has("sess1", "bash", [pattern])).toBe(true)
+    // The reply event carries the subagent session ("sess1"); dispatch consumes the
+    // root session ("root1"), so the seed must be keyed by the root, not the reply.
+    expect(cache.has("root1", "bash", [pattern])).toBe(true)
+    expect(cache.has("sess1", "bash", [pattern])).toBe(false)
+  })
+
+  test("a subagent always approval is reused by dispatch under the root session without a model call", async () => {
+    const cache = new SessionApprovalCache()
+    const runtime = makeRuntime()
+    installReviewer(runtime.context, { client: { reply: async () => "replied" }, cache })
+    const pattern = "bash:echo hi > /tmp/x"
+    const asked = runtime.emit("permission.asked", scopedAskedEvent("req-subagent", "echo hi > /tmp/x", pattern))
+    await runtime.emit("permission.replied", repliedEvent("req-subagent", "always"))
+    await asked
+
+    let modelCalls = 0
+    const fetchFn: FetchFn = async () => {
+      modelCalls += 1
+      throw new Error("the model must not be consulted for a reused session approval")
+    }
+    await reviewAndReply(
+      runtime.context,
+      { reply: async () => "replied" },
+      parseConfig({}),
+      {
+        id: "req-subagent-2",
+        sessionID: "sess1",
+        action: "bash",
+        resources: ["echo hi > /tmp/x"],
+        always: [pattern],
+        protocol: "stable",
+      },
+      cache,
+      performance.now(),
+      new AbortController().signal,
+      fetchFn,
+    )
+    expect(modelCalls).toBe(0)
   })
 
   test("does not seed the cache from a one-time user reply", async () => {
@@ -176,7 +216,7 @@ describe("installReviewer", () => {
     const asked = runtime.emit("permission.asked", scopedAskedEvent("req-once", "echo hi > /tmp/x", pattern))
     await runtime.emit("permission.replied", repliedEvent("req-once", "once"))
     await asked
-    expect(cache.has("sess1", "bash", [pattern])).toBe(false)
+    expect(cache.has("root1", "bash", [pattern])).toBe(false)
   })
 
   test("does not seed the cache from the plugin's own reply", async () => {
@@ -186,10 +226,12 @@ describe("installReviewer", () => {
       client: { reply: async () => "replied" },
       cache,
     })
-    const pattern = "bash:echo hi > /tmp/x"
-    await runtime.emit("permission.asked", scopedAskedEvent("req-plugin", "echo hi > /tmp/x", pattern))
+    // A deterministic deny keeps dispatch itself from caching an approval, so this
+    // isolates the replied-handler's plugin-reply exclusion.
+    const pattern = "bash:cat .env"
+    await runtime.emit("permission.asked", scopedAskedEvent("req-plugin", "cat .env", pattern))
     await runtime.emit("permission.replied", repliedEvent("req-plugin", "always"))
-    expect(cache.has("sess1", "bash", [pattern])).toBe(false)
+    expect(cache.has("root1", "bash", [pattern])).toBe(false)
   })
 
   test("does not seed the cache when sessionApprovals is false", async () => {
@@ -200,7 +242,7 @@ describe("installReviewer", () => {
     const asked = runtime.emit("permission.asked", scopedAskedEvent("req-disabled", "echo hi > /tmp/x", pattern))
     await runtime.emit("permission.replied", repliedEvent("req-disabled", "always"))
     await asked
-    expect(cache.has("sess1", "bash", [pattern])).toBe(false)
+    expect(cache.has("root1", "bash", [pattern])).toBe(false)
   })
 
   test("resumes a denied session with the continuation message and alternatives", async () => {
