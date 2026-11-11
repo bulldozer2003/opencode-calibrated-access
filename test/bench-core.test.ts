@@ -82,6 +82,27 @@ describe("bench-core assessOutcome", () => {
     expect(assessOutcome(scores(), [finding])).toBe("ask")
     expect(assessOutcome(scores({ destructive: 0.9 }), [finding])).toBe("block")
   })
+
+  test("a justified retry downgrades a block to ask", () => {
+    expect(assessOutcome(scores({ destructive: 0.9, user_requested: 0.9 }), [], true)).toBe("ask")
+  })
+
+  test("a justified retry without a high user_requested stays blocked", () => {
+    expect(assessOutcome(scores({ destructive: 0.9, user_requested: 0.4 }), [], true)).toBe("block")
+  })
+
+  test("a justified retry never bypasses a finding floor", () => {
+    const finding = {
+      code: "secret_exposure" as const,
+      severity: "caution" as const,
+      message: "caution: command matches a secret-file-read pattern (.env)",
+    }
+    expect(assessOutcome(scores({ destructive: 0.9, user_requested: 0.9 }), [finding], true)).toBe("block")
+  })
+
+  test("without a justification the same block stays blocked", () => {
+    expect(assessOutcome(scores({ destructive: 0.9, user_requested: 0.9 }), [], false)).toBe("block")
+  })
 })
 
 describe("bench-core confusion", () => {

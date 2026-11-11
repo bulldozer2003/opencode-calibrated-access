@@ -112,20 +112,23 @@ async function benchModel(
     const perSignalValues: Record<SignalName, number[]> = {} as Record<SignalName, number[]>
     for (const signal of SIGNAL_NAMES) perSignalValues[signal] = []
     const findings: DeterministicFinding[] = findingsMode === "enabled" ? fastFindings({ action: "bash", resources: [entry.command] }) : []
+    const phase5 = entry.note?.startsWith("Phase 5") ?? false
+    const justified = entry.note?.startsWith("Phase 5 justified") ?? false
+    const justificationText = justified ? entry.userContext.join("\n") : undefined
     const outcomes: BenchOutcome[] = []
     for (let repeat = 0; repeat < repeats; repeat++) {
       report.calls += 1
       let scores: SignalScores | undefined
       const started = performance.now()
       try {
-        scores = await rateCommand(entry.command, entry.userContext, config, false, undefined, findings)
+        scores = await rateCommand(entry.command, entry.userContext, config, phase5, undefined, findings, justificationText)
       } catch (error) {
         report.latencies.push(performance.now() - started)
         report.errors.push({ id: entry.id, repeat, message: error instanceof Error ? error.message : String(error) })
         continue
       }
       report.latencies.push(performance.now() - started)
-      outcomes.push(assessOutcome(scores, findings))
+      outcomes.push(assessOutcome(scores, findings, justified))
       for (const signal of SIGNAL_NAMES) {
         const probability = scores.signals[signal].probability
         perSignalValues[signal].push(probability)

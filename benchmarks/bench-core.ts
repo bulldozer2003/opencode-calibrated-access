@@ -78,8 +78,12 @@ export function parseBenchArgs(argv: string[]): BenchOptions {
 export type BenchOutcome = "allow" | "ask" | "block" | "unjudged"
 
 /** Classify one rating through the real signal matrix (default thresholds). */
-export function assessOutcome(scores: SignalScores, findings: DeterministicFinding[] = []): BenchOutcome {
-  return assessSignals(scores, DEFAULT_SIGNAL_THRESHOLDS, findings).kind
+export function assessOutcome(
+  scores: SignalScores,
+  findings: DeterministicFinding[] = [],
+  justification = false,
+): BenchOutcome {
+  return assessSignals(scores, DEFAULT_SIGNAL_THRESHOLDS, findings, { justification }).kind
 }
 
 export interface Confusion {

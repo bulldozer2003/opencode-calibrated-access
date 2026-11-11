@@ -272,7 +272,7 @@ describe("dispatch — diagnostics usage/cost", () => {
   test("records command text, promptVersion, and findings on a model decision", async () => {
     const { decision } = await runCommandWithDiagnostics("enforce", "cat .env", okFetch(systemOneBody()))
     expect(decision.command).toBe("cat .env")
-    expect(decision.promptVersion).toBe("2")
+    expect(decision.promptVersion).toBe("3")
     const findings = decision.findings as Array<Record<string, unknown>>
     expect(findings.map((finding) => finding.code)).toEqual(["secret_exposure"])
     expect(findings[0]!.severity).toBe("caution")
@@ -554,7 +554,7 @@ describe("dispatch — fast-deny routes resume after replying", () => {
     expect(decision.source).toBe("policy")
     expect(decision.reasonCode).toBe("catastrophic_delete")
     expect(decision.command).toBe("rm -rf /")
-    expect(decision.promptVersion).toBe("2")
+    expect(decision.promptVersion).toBe("3")
   })
 
   test("falls back to the last assistant agent when no user routing is present", async () => {
@@ -740,5 +740,146 @@ describe("dispatch — headless auto-reject race", () => {
 
     expect(cache.has("root1", req.action, req.always)).toBe(false)
     expect(harness.replies).toHaveLength(0)
+  })
+})
+
+describe("dispatch — block-with-appeal justification", () => {
+  const continuation = () => ({
+    type: "user",
+    text: "[Calibrated Access] The requested action was blocked: risky (blocked: gh pr create). Do not retry the exact blocked action.",
+  })
+  const justification =
+    "The user asked to create the PR; the body is the tested diff summary; the destination is the repo's own remote."
+  const blockBody = () =>
+    systemOneBody({
+      destructive: { score: 4, confidence: 0.9 },
+      user_requested: { score: 4, confidence: 0.9 },
+    })
+
+  async function runWithCache(
+    messages: unknown[],
+    cache: SessionApprovalCache,
+    fetchFn: FetchFn,
+    command = "gh pr create",
+  ): Promise<Harness> {
+    const harness = makeHarness(messages)
+    const config = parseConfig({ provider: "typesafe", systemOneApiKey: "sk-test", mode: "enforce" })
+    await reviewAndReply(
+      harness.context,
+      harness.client,
+      config,
+      { ...request, resources: [command] },
+      cache,
+      performance.now(),
+      new AbortController().signal,
+      fetchFn,
+    )
+    return harness
+  }
+
+  test("a justified retry downgrades a block to an ask (never a silent allow)", async () => {
+    const { replies } = await runWithCache(
+      [continuation(), { type: "user", text: justification }],
+      new SessionApprovalCache(),
+      okFetch(blockBody()),
+    )
+    expect(replies[0]!.reply).toBe("reject")
+    expect(replies[0]!.message).toMatch(/ask|confirm/i)
+    expect(replies[0]!.message).toMatch(/justif/i)
+  })
+
+  test("a retry without a justification stays blocked", async () => {
+    const { replies } = await runWithCache(
+      [continuation()],
+      new SessionApprovalCache(),
+      okFetch(blockBody()),
+    )
+    expect(replies[0]!.reply).toBe("reject")
+    expect(replies[0]!.message).toMatch(/meets the block threshold/i)
+    expect(replies[0]!.message).not.toMatch(/Justification supported/i)
+  })
+
+  test("a justified retry never bypasses a user_prohibited block", async () => {
+    const { replies } = await runWithCache(
+      [continuation(), { type: "user", text: justification }],
+      new SessionApprovalCache(),
+      okFetch(
+        systemOneBody({
+          user_prohibited: { score: 4, confidence: 0.9 },
+          user_requested: { score: 4, confidence: 0.9 },
+        }),
+      ),
+    )
+    expect(replies[0]!.reply).toBe("reject")
+    expect(replies[0]!.message).toMatch(/user_prohibited|prohibit/i)
+  })
+
+  test("a justified retry never bypasses a deterministic finding floor", async () => {
+    const { replies } = await runWithCache(
+      [continuation(), { type: "user", text: justification }],
+      new SessionApprovalCache(),
+      okFetch(blockBody()),
+      "cat .env",
+    )
+    expect(replies[0]!.reply).toBe("reject")
+    expect(replies[0]!.message).toMatch(/block/i)
+  })
+
+  test("one appeal per request: a second retry blocks outright without another model call", async () => {
+    const cache = new SessionApprovalCache()
+    const first = await runWithCache([continuation(), { type: "user", text: justification }], cache, okFetch(blockBody()))
+    expect(first.replies[0]!.reply).toBe("reject")
+
+    let modelCalls = 0
+    const second = await runWithCache(
+      [continuation(), { type: "user", text: justification }],
+      cache,
+      (async () => {
+        modelCalls += 1
+        throw new Error("model must not be called for an exhausted appeal")
+      }) as unknown as FetchFn,
+    )
+    expect(modelCalls).toBe(0)
+    expect(second.replies[0]!.reply).toBe("reject")
+    expect(second.replies[0]!.message).toMatch(/appeal/i)
+  })
+
+  test("one appeal per request: a second unjustified retry also blocks outright", async () => {
+    const cache = new SessionApprovalCache()
+    await runWithCache([continuation(), { type: "user", text: justification }], cache, okFetch(blockBody()))
+
+    let modelCalls = 0
+    const second = await runWithCache(
+      [continuation()],
+      cache,
+      (async () => {
+        modelCalls += 1
+        throw new Error("model must not be called for an exhausted appeal")
+      }) as unknown as FetchFn,
+    )
+    expect(modelCalls).toBe(0)
+    expect(second.replies[0]!.reply).toBe("reject")
+    expect(second.replies[0]!.message).toMatch(/appeal/i)
+  })
+
+  test("records promptVersion 3 on a justified decision event", async () => {
+    const path = `/tmp/calibrated-access-dispatch-${crypto.randomUUID()}.jsonl`
+    const harness = makeHarness([continuation(), { type: "user", text: justification }])
+    const config = parseConfig({ provider: "typesafe", systemOneApiKey: "sk-test", mode: "enforce", diagnosticsPath: path })
+    await reviewAndReply(
+      harness.context,
+      harness.client,
+      config,
+      { ...request, resources: ["gh pr create"] },
+      new SessionApprovalCache(),
+      performance.now(),
+      new AbortController().signal,
+      okFetch(blockBody()),
+    )
+    const decision = JSON.parse(readFileSync(path, "utf-8").trim().split("\n").pop()!)
+    unlinkSync(path)
+    expect(decision.promptVersion).toBe("3")
+    expect(decision.decision).toBe("deny")
+    expect(decision.reasonCode).toBe("signal_ask_destructive")
   })
 })

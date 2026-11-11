@@ -56,6 +56,10 @@ function errorFetch(status: number, text: string): FetchFn {
 }
 
 describe("rateCommand", () => {
+  test("bumps the prompt version to 3 for the justification guidance", () => {
+    expect(PROMPT_VERSION).toBe("3")
+  })
+
   test("returns parsed signal probabilities and confidence", async () => {
     const result = await rateCommand("git push --force", ["some context"], testConfig, false, okFetch({
       model: "jev-1.13.0",
@@ -137,6 +141,32 @@ describe("rateCommand", () => {
     }
     await rateCommand("rm file", ["user said do it"], testConfig, true, fetch)
     expect((sentBody as any).state.isRetry).toBe(true)
+  })
+
+  test("sends the retry justification in the System One judge state", async () => {
+    let sentBody: unknown = null
+    const fetch: FetchFn = async (_url, opts) => {
+      sentBody = JSON.parse(opts.body as string)
+      return okFetch({ model: "jev-1.13.0", answers: answers() })(_url, opts)
+    }
+    const justification = "The user asked to create the PR; the destination is this repo's own remote."
+    await rateCommand("gh pr create", ["user asked"], testConfig, true, fetch, [], justification)
+    const state = (sentBody as any).state
+    expect(state.justification).toBe(justification)
+    expect(state.justificationGuidance).toContain("justification")
+    expect(state.promptVersion).toBe(PROMPT_VERSION)
+  })
+
+  test("omits the justification from the judge state when none is supplied", async () => {
+    let sentBody: unknown = null
+    const fetch: FetchFn = async (_url, opts) => {
+      sentBody = JSON.parse(opts.body as string)
+      return okFetch({ model: "jev-1.13.0", answers: answers() })(_url, opts)
+    }
+    await rateCommand("git status", [], testConfig, false, fetch)
+    const state = (sentBody as any).state
+    expect(state.justification).toBeUndefined()
+    expect(state.justificationGuidance).toBeUndefined()
   })
 
   test("throws on API error", async () => {
@@ -299,6 +329,21 @@ describe("rateCommand (openai-compatible provider)", () => {
     await rateCommand("rm file", ["user said do it"], openAIConfig, true, fetch)
     const content = (sentBody as any).messages[1].content as string
     expect(content).toContain("previously blocked")
+  })
+
+  test("sends the retry justification in the OpenAI prompt", async () => {
+    let sentBody: unknown = null
+    const fetch: FetchFn = async (_url, opts) => {
+      sentBody = JSON.parse(opts.body as string)
+      return { ok: true, json: async () => ({ choices: [{ message: { content: signalJson() } }] }) } as any
+    }
+    const justification = "The user asked to create the PR; the destination is this repo's own remote."
+    await rateCommand("gh pr create", ["user asked"], openAIConfig, true, fetch, [], justification)
+    const system = (sentBody as any).messages[0].content as string
+    const user = (sentBody as any).messages[1].content as string
+    expect(system).toContain("justification")
+    expect(user).toContain("Justification:")
+    expect(user).toContain(justification)
   })
 
   test("throws on API error from openai endpoint", async () => {

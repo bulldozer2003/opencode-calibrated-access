@@ -272,3 +272,151 @@ describe("assessSignals — deterministic finding floor", () => {
     expect(result.kind).not.toBe("allow")
   })
 })
+
+describe("assessSignals — justified retry downgrade", () => {
+  const finding = {
+    code: "secret_exposure" as const,
+    severity: "caution" as const,
+    message: "caution: command matches a secret-file-read pattern (.env)",
+  }
+
+  test("a sound justification downgrades a block to ask", () => {
+    const result = assessSignals(
+      scores({
+        destructive: { probability: 0.9, confidence: 0.9 },
+        user_requested: { probability: 0.9, confidence: 0.9 },
+      }),
+      DEFAULT_SIGNAL_THRESHOLDS,
+      [],
+      { justification: true },
+    )
+    expect(result.kind).toBe("ask")
+    if (result.kind !== "ask") throw new Error("expected ask")
+    expect(result.reason).toContain("ustification")
+  })
+
+  test("a justified retry never silently allows", () => {
+    const result = assessSignals(
+      scores({
+        destructive: { probability: 0.9, confidence: 0.9 },
+        user_requested: { probability: 0.95, confidence: 0.95 },
+      }),
+      DEFAULT_SIGNAL_THRESHOLDS,
+      [],
+      { justification: true },
+    )
+    expect(result.kind).toBe("ask")
+  })
+
+  test("a justified ask-tier request stays ask, not allow", () => {
+    const result = assessSignals(
+      scores({
+        destructive: { probability: 0.65, confidence: 0.9 },
+        user_requested: { probability: 0.95, confidence: 0.95 },
+      }),
+      DEFAULT_SIGNAL_THRESHOLDS,
+      [],
+      { justification: true },
+    )
+    expect(result.kind).toBe("ask")
+  })
+
+  test("an unsound justification (low user_requested) leaves the block", () => {
+    const result = assessSignals(
+      scores({
+        destructive: { probability: 0.9, confidence: 0.9 },
+        user_requested: { probability: 0.4, confidence: 0.9 },
+      }),
+      DEFAULT_SIGNAL_THRESHOLDS,
+      [],
+      { justification: true },
+    )
+    expect(result.kind).toBe("block")
+  })
+
+  test("a justified retry never bypasses a user_prohibited block", () => {
+    const result = assessSignals(
+      scores({
+        user_prohibited: { probability: 0.9, confidence: 0.9 },
+        user_requested: { probability: 0.9, confidence: 0.9 },
+      }),
+      DEFAULT_SIGNAL_THRESHOLDS,
+      [],
+      { justification: true },
+    )
+    expect(result.kind).toBe("block")
+    if (result.kind !== "block") throw new Error("expected block")
+    expect(result.signal).toBe("user_prohibited")
+  })
+
+  test("a justified retry never bypasses a user_prohibited block even when another signal is higher", () => {
+    const result = assessSignals(
+      scores({
+        destructive: { probability: 0.95, confidence: 0.9 },
+        user_prohibited: { probability: 0.85, confidence: 0.9 },
+        user_requested: { probability: 0.9, confidence: 0.9 },
+      }),
+      DEFAULT_SIGNAL_THRESHOLDS,
+      [],
+      { justification: true },
+    )
+    expect(result.kind).toBe("block")
+    if (result.kind !== "block") throw new Error("expected block")
+    expect(result.signal).toBe("user_prohibited")
+  })
+
+  test("a justified retry never bypasses a finding floor", () => {
+    const result = assessSignals(
+      scores({
+        destructive: { probability: 0.9, confidence: 0.9 },
+        user_requested: { probability: 0.9, confidence: 0.9 },
+      }),
+      DEFAULT_SIGNAL_THRESHOLDS,
+      [finding],
+      { justification: true },
+    )
+    expect(result.kind).toBe("block")
+    if (result.kind !== "block") throw new Error("expected block")
+    expect(result.finding).toBe(true)
+  })
+
+  test("a justified unjudged request asks rather than blocks", () => {
+    const result = assessSignals(
+      scores({
+        destructive: { probability: 1, confidence: 0.4 },
+        secret_exposure: { probability: 1, confidence: 0.4 },
+        exfiltration: { probability: 1, confidence: 0.4 },
+        prompt_injection: { probability: 1, confidence: 0.4 },
+        scope_creep: { probability: 1, confidence: 0.4 },
+        user_prohibited: { probability: 1, confidence: 0.4 },
+        severity: { probability: 1, confidence: 0.4 },
+      }),
+      DEFAULT_SIGNAL_THRESHOLDS,
+      [],
+      { justification: true },
+    )
+    expect(result.kind).toBe("ask")
+  })
+
+  test("a justified block is not downgraded when the justification is absent", () => {
+    const result = assessSignals(
+      scores({
+        destructive: { probability: 0.9, confidence: 0.9 },
+        user_requested: { probability: 0.95, confidence: 0.95 },
+      }),
+      DEFAULT_SIGNAL_THRESHOLDS,
+    )
+    expect(result.kind).toBe("block")
+  })
+
+  test("the user_requested ask→allow override still applies without a justification", () => {
+    const result = assessSignals(
+      scores({
+        destructive: { probability: 0.65, confidence: 0.9 },
+        user_requested: { probability: 0.95, confidence: 0.95 },
+      }),
+      DEFAULT_SIGNAL_THRESHOLDS,
+    )
+    expect(result.kind).toBe("allow")
+  })
+})

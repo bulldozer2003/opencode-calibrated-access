@@ -65,6 +65,27 @@ export function isPluginContinuation(text: string): boolean {
   return text.trimStart().startsWith(CALIBRATED_PREFIX)
 }
 
+/**
+ * Extract the retry justification: the newest user-visible message text that
+ * follows the most recent denial continuation. The continuation message itself
+ * is not a justification; the message the agent (or user) sends after it is.
+ */
+export function extractRetryJustification(messages: unknown[]): string | undefined {
+  const textAt = (message: unknown): string | undefined =>
+    typeof message === "object" && message !== null ? messageText(message as Record<string, unknown>) : undefined
+  let lastContinuation = -1
+  for (let i = 0; i < messages.length; i++) {
+    const text = textAt(messages[i])
+    if (text !== undefined && isPluginContinuation(text)) lastContinuation = i
+  }
+  if (lastContinuation === -1) return undefined
+  for (let i = messages.length - 1; i > lastContinuation; i--) {
+    const text = textAt(messages[i])
+    if (text !== undefined && !isPluginContinuation(text)) return text.slice(0, MAX_MESSAGE_CHARS)
+  }
+  return undefined
+}
+
 export function collectUserMessages(messages: unknown[], count: number): string[] {
   return messages
     .flatMap((message) => {
