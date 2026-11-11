@@ -1,4 +1,19 @@
+import { SIGNAL_NAMES, type SignalName } from "./types.ts"
+
 export const JEV_INPUT_USD_PER_MILLION = 0.042
+
+export interface SignalStats {
+  count: number
+  mean: number
+  max: number
+  variance: number
+}
+
+export interface CommandPatternStats {
+  count: number
+  outcomes: Record<string, number>
+  signals: Record<string, SignalStats>
+}
 
 export interface DiagnosticSummary {
   totalEvents: number
@@ -12,6 +27,7 @@ export interface DiagnosticSummary {
   usdEstimated: boolean
   perDay: Record<string, number>
   perSession: Record<string, number>
+  perCommand: Record<string, CommandPatternStats>
   malformedLines: number
 }
 
@@ -36,6 +52,21 @@ function costUSD(cost: unknown): number | undefined {
   return numericLeaf(cost.usd) ?? numericLeaf(cost.value)
 }
 
+function statsFrom(values: readonly number[]): SignalStats {
+  const count = values.length
+  if (count === 0) return { count: 0, mean: 0, max: 0, variance: 0 }
+  let total = 0
+  let max = 0
+  for (const value of values) {
+    total += value
+    if (value > max) max = value
+  }
+  const mean = total / count
+  let acc = 0
+  for (const value of values) acc += (value - mean) ** 2
+  return { count, mean, max, variance: acc / count }
+}
+
 export function summarizeDiagnostics(lines: readonly string[]): DiagnosticSummary {
   let totalEvents = 0
   let decisionEvents = 0
@@ -47,6 +78,7 @@ export function summarizeDiagnostics(lines: readonly string[]): DiagnosticSummar
   let malformedLines = 0
   const perDay: Record<string, number> = {}
   const perSession: Record<string, number> = {}
+  const perCommand: Record<string, { outcomes: Record<string, number>; count: number; signals: Record<string, number[]> }> = {}
 
   for (const raw of lines) {
     const trimmed = raw.trim()
@@ -84,12 +116,34 @@ export function summarizeDiagnostics(lines: readonly string[]): DiagnosticSummar
       perDay[day] = (perDay[day] ?? 0) + 1
       const session = typeof parsed.sessionID === "string" ? parsed.sessionID : "unknown"
       perSession[session] = (perSession[session] ?? 0) + 1
+
+      const command = typeof parsed.action === "string" ? parsed.action : "unknown"
+      const bucket = (perCommand[command] ??= { count: 0, outcomes: {}, signals: {} })
+      bucket.count += 1
+      const outcome = typeof parsed.decision === "string" ? parsed.decision : "unknown"
+      bucket.outcomes[outcome] = (bucket.outcomes[outcome] ?? 0) + 1
+      if (isRecord(parsed.signals)) {
+        for (const signal of SIGNAL_NAMES) {
+          const entry = parsed.signals[signal]
+          if (!isRecord(entry)) continue
+          const probability = numericLeaf(entry.probability)
+          if (probability === undefined) continue
+          ;(bucket.signals[signal] ??= []).push(probability)
+        }
+      }
     }
   }
 
   const estimatedUSD = (inputTokens / 1_000_000) * JEV_INPUT_USD_PER_MILLION
   const usdEstimated = !measuredAny
   const usd = usdEstimated ? estimatedUSD : measuredUSD
+
+  const commandStats: Record<string, CommandPatternStats> = {}
+  for (const [command, bucket] of Object.entries(perCommand)) {
+    const signals: Record<string, SignalStats> = {}
+    for (const [signal, values] of Object.entries(bucket.signals)) signals[signal] = statsFrom(values)
+    commandStats[command] = { count: bucket.count, outcomes: bucket.outcomes, signals }
+  }
 
   return {
     totalEvents,
@@ -103,6 +157,7 @@ export function summarizeDiagnostics(lines: readonly string[]): DiagnosticSummar
     usdEstimated,
     perDay,
     perSession,
+    perCommand: commandStats,
     malformedLines,
   }
 }
@@ -111,6 +166,29 @@ function groupLines(group: Record<string, number>): string {
   const entries = Object.entries(group)
   if (entries.length === 0) return "  (none)"
   return entries.map(([key, count]) => `  ${key}  ${count}`).join("\n")
+}
+
+function commandLines(perCommand: Record<string, CommandPatternStats>): string {
+  const entries = Object.entries(perCommand)
+  if (entries.length === 0) return "  (none)"
+  const lines: string[] = []
+  for (const [command, stats] of entries) {
+    const outcomes = Object.entries(stats.outcomes)
+      .map(([outcome, count]) => `${outcome}=${count}`)
+      .join(" ")
+    lines.push(`  ${command}  events ${stats.count}${outcomes ? `  (${outcomes})` : ""}`)
+    const signals = Object.entries(stats.signals)
+    if (signals.length === 0) {
+      lines.push("    (no signal data)")
+      continue
+    }
+    for (const [signal, signalStats] of signals) {
+      lines.push(
+        `    ${signal}  count ${signalStats.count} mean ${signalStats.mean.toFixed(3)} max ${signalStats.max.toFixed(3)} var ${signalStats.variance.toFixed(4)}`,
+      )
+    }
+  }
+  return lines.join("\n")
 }
 
 export function formatSummary(summary: DiagnosticSummary): string {
@@ -131,5 +209,8 @@ export function formatSummary(summary: DiagnosticSummary): string {
     "",
     "Per session:",
     groupLines(summary.perSession),
+    "",
+    "Per command pattern:",
+    commandLines(summary.perCommand),
   ].join("\n")
 }
