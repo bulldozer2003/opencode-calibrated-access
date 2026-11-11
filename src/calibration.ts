@@ -23,7 +23,22 @@ export const DEFAULT_NEAR_MARGIN = 0.15
 export const DEFAULT_THRESHOLD_GRID: readonly number[] = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
 
 const SHADOW_PREFIX = "shadow_"
-const NON_MODEL_SOURCES = new Set(["policy", "session", "error"])
+const NON_MODEL_SOURCES = new Set(["policy", "session", "error", "appeal"])
+
+/**
+ * Every reason code the plugin can emit with a `shadow_` prefix — the shadow
+ * projection of a would-be outcome. Enumerated so the calibration reader can
+ * never silently fall through a newly added shadow code: the source-scan test
+ * in test/calibration.test.ts fails when a concrete `shadow_*` literal appears
+ * in src/ without being listed here, and each entry is asserted to map to the
+ * enforce-mode outcome its stripped code produces.
+ */
+export const SHADOW_REASON_CODES: readonly string[] = [
+  "shadow_ask",
+  "shadow_block",
+  "shadow_unjudged",
+  "shadow_appeal_exhausted",
+]
 
 export interface DecisionRecord {
   lineIndex: number
@@ -37,6 +52,7 @@ export interface DecisionRecord {
   decision: string
   reasonCode: string
   outcome: EffectiveOutcome
+  justified: boolean
   signals: SignalMap
   findings: DeterministicFinding[]
 }
@@ -73,7 +89,8 @@ export function effectiveOutcome(decision: string, reasonCode: string): Effectiv
     code === "no_confident_signals" ||
     code === "unjudged" ||
     code === "catastrophic_delete" ||
-    code === "explicit_user_prohibition"
+    code === "explicit_user_prohibition" ||
+    code === "appeal_exhausted"
   ) {
     return "block"
   }
@@ -533,6 +550,7 @@ function parseDecision(record: Record<string, unknown>, lineIndex: number): Deci
     decision,
     reasonCode,
     outcome: effectiveOutcome(decision, reasonCode),
+    justified: record.justified === true,
     signals: parseSignals(record.signals),
     findings: parseFindings(record.findings),
   }
@@ -583,7 +601,7 @@ function parseFindings(value: unknown): DeterministicFinding[] {
 
 function assessmentOutcome(decision: DecisionRecord, thresholds: ThresholdMap): EffectiveOutcome {
   const scores: SignalScores = { signals: buildFullSignals(decision.signals) }
-  const assessment = assessSignals(scores, thresholds, decision.findings)
+  const assessment = assessSignals(scores, thresholds, decision.findings, { justification: decision.justified })
   return assessment.kind === "unjudged" ? "block" : assessment.kind
 }
 
