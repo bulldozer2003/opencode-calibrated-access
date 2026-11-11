@@ -169,8 +169,21 @@ Per-signal thresholds decide the outcome:
 
 - No risk signal confident at all (every confidence below `0.5`) → deny with reasonCode `no_confident_signals`; the `user_requested` override cannot rescue it.
 - Any risk signal at or above its **block** threshold → deny.
-- Otherwise any risk signal at or above its **ask** threshold → deny, telling the agent to confirm with the user before retrying.
+- Otherwise any risk signal at or above its **ask** threshold → deny with a confirm-with-the-user instruction. The ask tier is **terminal** — there is no native "ask" reply kind, so it is a reject that tells the agent to get confirmation before retrying (see [Appeal](#appeal-modify-or-justify)).
 - `user_requested` is a protective override: when its probability is at least `0.8` (with confidence `≥ 0.5`) and the only offender is in the **ask** tier, the request is allowed. It never downgrades a **block**-tier deny.
+
+### Appeal: modify or justify
+
+Every deny (block, ask, or exhausted appeal) presents exactly two paths in both the reply and the resume continuation:
+
+- **Modify** — do not retry the exact blocked action; use a safer alternative (the deny message lists candidates when the determinism layer has them) and ask the user only if no useful safe path remains.
+- **Justify** — if the user explicitly asked for this exact action, retry **the same action** once with a clear, explicit justification tied to the user's request.
+
+A justified retry flows the newest user-visible message after the denial into the judge state. The judge weighs it against the signals and findings and treats the `user_requested` score as the soundness signal: a **sound** justification downgrades a **block to an ask**, never a silent allow, and disables the `user_requested` ask→allow override for that retry. `explicit_user_prohibition`, `user_prohibited` blocks, and deterministic finding floors still apply — intent downgrades, never bypasses. The decision event records `justified: true` so calibration can reproduce the recorded outcome.
+
+The justification path is scoped to the **same blocked command**. A retry of a different command after a denial is the modify path: a fresh request judged on its own merits, with no justification interpretation, no ask floor, and no appeal marking. The one-appeal bound is keyed by session + action + patterns, so it only ever applies to a retry of the same action; a second retry of that action is blocked outright as `appeal_exhausted` without another model call.
+
+**Open design question (parked).** The ask tier is terminal: opencode has no ask reply kind, so the plugin can only reject with instructions. Two results follow. First, a human who approves the prompt through the UI with **Always allow** seeds the session cache (phase 0), and that cached allow bypasses the appeal bound for the rest of the session — the intended "yes, do it" path. Second, a human who merely *confirms in chat* ("yes, go ahead") has no equivalent: the agent's same-command retry is read as a justified retry, and once the single appeal is consumed a further retry dead-ends at `appeal_exhausted` even though the human approved. Whether to keep the current semantics, surface a real ask to the TUI, or add another confirmation channel is a design question pending human review.
 
 ### Shadow mode
 
