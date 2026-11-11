@@ -1147,6 +1147,7 @@ describe("dispatch — unjustified retry (P1)", () => {
     expect(harness.replies[0]!.reply).toBe("reject")
     expect(harness.replies[0]!.message).toMatch(/appeal/i)
     expect(decision.reasonCode).toBe("appeal_exhausted")
+    expect(decision.source).toBe("appeal")
   })
 
   test("precedence: explicit user prohibition stays enforced in shadow mode over P1", async () => {
@@ -1156,6 +1157,7 @@ describe("dispatch — unjustified retry (P1)", () => {
     expect(harness.replies[0]!.reply).toBe("reject")
     expect(harness.replies[0]!.message).toContain("prohibit")
     expect(decision.reasonCode).toBe("explicit_user_prohibition")
+    expect(decision.source).toBe("policy")
   })
 
   test("precedence: a session-approval cache hit wins over P1", async () => {
@@ -1171,6 +1173,7 @@ describe("dispatch — unjustified retry (P1)", () => {
     expect(modelCalls()).toBe(0)
     expect(harness.replies[0]!.reply).toBe("once")
     expect(decision.reasonCode).toBe("session_approval_reused")
+    expect(decision.source).toBe("session")
   })
 
   test("a P1 deny does not consume the one appeal", async () => {

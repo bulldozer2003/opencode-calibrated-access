@@ -129,7 +129,11 @@ export async function reviewAndReply(
     // run`'s headless client auto-rejects on `permission.asked` without waiting
     // for the plugin. Record the completed review for calibration, but never
     // reply or cache an approval for a permission that is already settled.
-    writeDiag(config, request, startedAt, decision, appealExhausted || unjustifiedRetry ? "appeal" : sourceLabel(effectivePolicy, cached, config), signals, cautions, justified)
+    // Source attribution must name the branch that decided: the appeal bound and
+    // the P1 unjustified-retry deny record `appeal`, but a deterministic policy
+    // or session-cache hit that preempts P1 keeps its own source.
+    const decidedByRetryDenial = appealExhausted || (unjustifiedRetry && !effectivePolicy && !cached)
+    writeDiag(config, request, startedAt, decision, decidedByRetryDenial ? "appeal" : sourceLabel(effectivePolicy, cached, config), signals, cautions, justified)
     if (signal.aborted) return
 
     if (config.sessionApprovals && cacheKey && decision.kind === "allow" && !decision.reasonCode.startsWith("shadow_")) {
