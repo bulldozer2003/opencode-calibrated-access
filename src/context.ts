@@ -1,4 +1,4 @@
-import type { PermissionRequest } from "./types.ts"
+import type { PermissionRequest, ResumeRouting } from "./types.ts"
 import { CALIBRATED_PREFIX } from "./types.ts"
 
 const MAX_MESSAGE_CHARS = 4_000
@@ -81,6 +81,65 @@ function userText(message: unknown): string | undefined {
     .map((part: { text: string }) => part.text)
     .join("\n")
   return text && !isPluginContinuation(text) ? text : undefined
+}
+
+export function lastAssistantAgent(messages: unknown[]): string | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]
+    if (!isRecord(message)) continue
+    const text = messageText(message)
+    if (text !== undefined && isPluginContinuation(text)) continue
+    const agent = assistantAgent(message)
+    if (agent) return agent
+  }
+  return undefined
+}
+
+function assistantAgent(message: Record<string, unknown>): string | undefined {
+  const info = message.info
+  if (isRecord(info) && info.role === "assistant" && typeof info.agent === "string") return info.agent
+  if (message.role === "assistant" && typeof message.agent === "string") return message.agent
+  if (message.type === "assistant" && typeof message.agent === "string") return message.agent
+  return undefined
+}
+
+export function latestUserRouting(messages: unknown[]): ResumeRouting {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]
+    if (!isRecord(message)) continue
+    const info = isRecord(message.info) ? message.info : message
+    const role = typeof info.role === "string" ? info.role : typeof info.type === "string" ? info.type : undefined
+    if (role !== "user") continue
+    const text = messageText(message)
+    if (text !== undefined && isPluginContinuation(text)) continue
+
+    const agent = typeof info.agent === "string" ? info.agent : undefined
+    const modelValue = isRecord(info.model) ? info.model : undefined
+    const providerID = modelValue?.providerID
+    const modelID = modelValue?.modelID ?? modelValue?.id
+    const model =
+      typeof providerID === "string" && typeof modelID === "string" ? { providerID, modelID } : undefined
+    const variant = typeof modelValue?.variant === "string" ? modelValue.variant : undefined
+
+    return {
+      ...(agent ? { agent } : {}),
+      ...(model ? { model } : {}),
+      ...(variant ? { variant } : {}),
+    }
+  }
+  return {}
+}
+
+function messageText(message: Record<string, unknown>): string | undefined {
+  if (typeof message.text === "string") return message.text
+  if (isRecord(message.info) && Array.isArray(message.parts)) {
+    const text = message.parts
+      .filter((part): part is Record<string, unknown> => isRecord(part) && part.type === "text" && typeof part.text === "string")
+      .map((part) => part.text as string)
+      .join("\n")
+    return text.length > 0 ? text : undefined
+  }
+  return undefined
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

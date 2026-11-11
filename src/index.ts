@@ -10,13 +10,14 @@ interface SessionRecord {
 
 interface SessionClient {
   session?: {
-    get?(input: { path: { id: string } }): Promise<unknown>
-    messages?(input: { path: { id: string } }): Promise<unknown>
+    get?(input: { path: { id: string }; query?: { directory: string } }): Promise<unknown>
+    messages?(input: { path: { id: string }; query?: { directory: string } }): Promise<unknown>
   }
 }
 
 export interface CalibratedAccessPluginInput {
   client?: unknown
+  directory?: string
 }
 
 export interface CalibratedAccessHooks {
@@ -29,11 +30,13 @@ export const CalibratedAccessPlugin = async (
   options: Record<string, unknown> = {},
 ): Promise<CalibratedAccessHooks> => {
   const client = (input.client ?? {}) as SessionClient
+  const directory = input.directory
   const handlers = new Map<string, EventHandler[]>()
 
   const context: RuntimeContext = {
     options,
     client,
+    ...(directory ? { directory } : {}),
     data: {
       on(type, handler) {
         const list = handlers.get(type) ?? []
@@ -44,10 +47,10 @@ export const CalibratedAccessPlugin = async (
         }
       },
       session: {
-        root: (sessionID) => resolveRoot(client, sessionID),
+        root: (sessionID) => resolveRoot(client, sessionID, directory),
         get: () => undefined,
         message: {
-          list: (sessionID) => fetchMessages(client, sessionID),
+          list: (sessionID) => fetchMessages(client, sessionID, directory),
           get: () => undefined,
           sync: async () => {},
         },
@@ -76,31 +79,35 @@ export const CalibratedAccessPlugin = async (
   }
 }
 
-async function resolveRoot(client: SessionClient, sessionID: string): Promise<string> {
+async function resolveRoot(client: SessionClient, sessionID: string, directory?: string): Promise<string> {
   let id = sessionID
   for (let depth = 0; depth < 50; depth++) {
-    const parent = (await getSession(client, id))?.parentID
+    const parent = (await getSession(client, id, directory))?.parentID
     if (typeof parent !== "string" || parent.length === 0) return id
     id = parent
   }
   return id
 }
 
-async function getSession(client: SessionClient, sessionID: string): Promise<SessionRecord | undefined> {
+async function getSession(client: SessionClient, sessionID: string, directory?: string): Promise<SessionRecord | undefined> {
   try {
-    return unwrapData<SessionRecord>(await client.session?.get?.({ path: { id: sessionID } }))
+    return unwrapData<SessionRecord>(await client.session?.get?.({ path: { id: sessionID }, ...scopeQuery(directory) }))
   } catch {
     return undefined
   }
 }
 
-async function fetchMessages(client: SessionClient, sessionID: string): Promise<unknown[]> {
+async function fetchMessages(client: SessionClient, sessionID: string, directory?: string): Promise<unknown[]> {
   try {
-    const data = unwrapData<unknown>(await client.session?.messages?.({ path: { id: sessionID } }))
+    const data = unwrapData<unknown>(await client.session?.messages?.({ path: { id: sessionID }, ...scopeQuery(directory) }))
     return Array.isArray(data) ? data : []
   } catch {
     return []
   }
+}
+
+function scopeQuery(directory: string | undefined): { query?: { directory: string } } {
+  return directory ? { query: { directory } } : {}
 }
 
 function unwrapData<T>(result: unknown): T | undefined {

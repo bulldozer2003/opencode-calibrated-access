@@ -177,6 +177,22 @@ export function applyDeterministicPolicy(input: ReviewInput): Decision | null {
   const command = commandText(input)
   if (!command) return null
 
+  const fast = fastDeny({ action: input.request.action, resources: input.request.resources })
+  if (fast) return fast
+
+  if (!SHELL_COMPOSITION.test(command) && isRoutineLocalCommand(command)) {
+    return { kind: "allow", reasonCode: "routine_local_command", reason: "Runs a routine local inspection or validation command." }
+  }
+
+  return null
+}
+
+export function fastDeny(request: { action: string; resources: string[] }): Decision | null {
+  if (request.action !== "bash") return null
+
+  const command = request.resources.join(" && ").trim()
+  if (!command) return null
+
   if (isRootOrHomeRecursiveDelete(command)) {
     return deny("catastrophic_delete", "Recursively deleting the filesystem root or home directory would cause catastrophic data loss.")
   }
@@ -184,10 +200,6 @@ export function applyDeterministicPolicy(input: ReviewInput): Decision | null {
   const exposure = detectSecretExposure(command)
   if (exposure) {
     return { kind: "deny", reasonCode: exposure.reasonCode, reason: exposure.reason, alternatives: alternativesFor(exposure.reasonCode) }
-  }
-
-  if (!SHELL_COMPOSITION.test(command) && isRoutineLocalCommand(command)) {
-    return { kind: "allow", reasonCode: "routine_local_command", reason: "Runs a routine local inspection or validation command." }
   }
 
   return null

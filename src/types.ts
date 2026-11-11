@@ -52,6 +52,12 @@ export interface ReviewInput {
 
 export type ProviderType = "typesafe" | "openai-compatible"
 
+export interface ResumeRouting {
+  agent?: string
+  model?: { providerID: string; modelID: string }
+  variant?: string
+}
+
 export interface CalibratedConfig {
   mode: SafetyMode
   signalThresholds: Record<RiskSignalName, { block: number; ask: number }>
@@ -80,6 +86,7 @@ export interface ReviewerClient {
 export interface RuntimeContext {
   options: Readonly<Record<string, unknown>>
   client: unknown
+  directory?: string
   data: {
     on(type: string, handler: (event: unknown) => void): () => void
     session: {
@@ -102,7 +109,7 @@ export interface RuntimeContext {
     variant?: "info" | "success" | "warning" | "error"
     duration?: number
   }): void
-  resumeAfterDenial?(sessionID: string, reason: string): void
+  resumeAfterDenial?(sessionID: string, reason: string, routing?: ResumeRouting): void
 }
 
 export const CALIBRATED_PREFIX = "[Calibrated Access] The requested action was blocked:"

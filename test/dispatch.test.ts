@@ -4,7 +4,7 @@ import { reviewAndReply } from "../src/dispatch.ts"
 import { parseConfig } from "../src/config.ts"
 import { SessionApprovalCache } from "../src/cache.ts"
 import type { FetchFn } from "../src/risk-rater.ts"
-import type { PermissionRequest, ReviewerClient, RuntimeContext, SignalName } from "../src/types.ts"
+import type { PermissionRequest, ReviewerClient, ResumeRouting, RuntimeContext, SignalName } from "../src/types.ts"
 import { SIGNAL_NAMES } from "../src/types.ts"
 
 type ReplyInput = Parameters<ReviewerClient["reply"]>[0]
@@ -14,7 +14,7 @@ interface Harness {
   client: ReviewerClient
   replies: ReplyInput[]
   toasts: Array<{ title?: string; message: string; variant?: string }>
-  resumes: Array<{ sessionID: string; reason: string }>
+  resumes: Array<{ sessionID: string; reason: string; routing?: ResumeRouting }>
 }
 
 function makeHarness(messages: unknown[] = []): Harness {
@@ -34,7 +34,7 @@ function makeHarness(messages: unknown[] = []): Harness {
       },
     },
     showToast: (input) => toasts.push(input),
-    resumeAfterDenial: (sessionID, reason) => resumes.push({ sessionID, reason }),
+    resumeAfterDenial: (sessionID, reason, routing) => resumes.push({ sessionID, reason, ...(routing ? { routing } : {}) }),
   }
   const client: ReviewerClient = {
     async reply(input) {
@@ -43,6 +43,85 @@ function makeHarness(messages: unknown[] = []): Harness {
     },
   }
   return { context, client, replies, toasts, resumes }
+}
+
+interface SpyHarness extends Harness {
+  rootCalls: () => number
+  listCalls: () => number
+  order: string[]
+}
+
+interface SpyOptions {
+  failMessages?: boolean
+}
+
+function makeSpyHarness(messages: unknown[] = [], options: SpyOptions = {}): SpyHarness {
+  const replies: ReplyInput[] = []
+  const toasts: Harness["toasts"] = []
+  const resumes: Harness["resumes"] = []
+  const order: string[] = []
+  let rootCalls = 0
+  let listCalls = 0
+  const context: RuntimeContext = {
+    options: {},
+    client: {},
+    data: {
+      on: () => () => {},
+      session: {
+        root: () => {
+          rootCalls += 1
+          order.push("root")
+          return "root1"
+        },
+        get: () => undefined,
+        message: {
+          list: () => {
+            listCalls += 1
+            order.push("messages")
+            if (options.failMessages) throw new Error("messages unavailable")
+            return messages
+          },
+          get: () => undefined,
+          sync: async () => {},
+        },
+        permission: { list: () => undefined, sync: async () => {} },
+      },
+    },
+    showToast: (input) => toasts.push(input),
+    resumeAfterDenial: (sessionID, reason, routing) => resumes.push({ sessionID, reason, ...(routing ? { routing } : {}) }),
+  }
+  const client: ReviewerClient = {
+    async reply(input) {
+      order.push("reply")
+      replies.push(input)
+      return "replied"
+    },
+  }
+  return { context, client, replies, toasts, resumes, rootCalls: () => rootCalls, listCalls: () => listCalls, order }
+}
+
+async function runSpy(
+  mode: "shadow" | "enforce",
+  command: string,
+  messages: unknown[] = [],
+  options: SpyOptions = {},
+): Promise<{ harness: SpyHarness; decision: Record<string, unknown> }> {
+  const path = `/tmp/calibrated-access-dispatch-${crypto.randomUUID()}.jsonl`
+  const harness = makeSpyHarness(messages, options)
+  const config = parseConfig({ provider: "typesafe", systemOneApiKey: "sk-test", mode, diagnosticsPath: path })
+  await reviewAndReply(
+    harness.context,
+    harness.client,
+    config,
+    { ...request, resources: [command] },
+    new SessionApprovalCache(),
+    performance.now(),
+    new AbortController().signal,
+    failingFetch(),
+  )
+  const decision = JSON.parse(readFileSync(path, "utf-8").trim().split("\n").pop()!)
+  unlinkSync(path)
+  return { harness, decision }
 }
 
 function systemOneBody(overrides: Partial<Record<SignalName, { score?: number; confidence?: number }>> = {}) {
@@ -349,6 +428,26 @@ describe("dispatch — deterministic secret exposure", () => {
     const { replies } = await runCommand("enforce", "git status", okFetch(systemOneBody()))
     expect(replies[0]!.reply).toBe("once")
   })
+
+  test("passes the last assistant agent as routing to resumeAfterDenial", async () => {
+    const messages = [{ info: { role: "assistant", agent: "planner" }, parts: [] }]
+    const { resumes } = await runCommand("enforce", "sudo apt update", okFetch(systemOneBody({ destructive: { score: 4, confidence: 0.9 } })), messages)
+    expect(resumes).toHaveLength(1)
+    expect(resumes[0]!.routing).toEqual({ agent: "planner" })
+  })
+
+  test("derives routing from the latest user message", async () => {
+    const messages = [
+      { info: { role: "user", agent: "planner", model: { providerID: "anthropic", modelID: "claude-sonnet", variant: "high" } }, parts: [] },
+    ]
+    const { resumes } = await runCommand("enforce", "sudo apt update", okFetch(systemOneBody({ destructive: { score: 4, confidence: 0.9 } })), messages)
+    expect(resumes).toHaveLength(1)
+    expect(resumes[0]!.routing).toEqual({
+      agent: "planner",
+      model: { providerID: "anthropic", modelID: "claude-sonnet" },
+      variant: "high",
+    })
+  })
 })
 
 describe("dispatch — shadow mode deterministic policy", () => {
@@ -398,6 +497,74 @@ describe("dispatch — user_prohibited signal", () => {
     expect(replies[0]!.reply).toBe("once")
     expect(replies[0]!.message).toBeUndefined()
     expect(toasts.some((t) => /shadow mode: would have blocked/i.test(t.message) && /user_prohibited/.test(t.message))).toBe(true)
+  })
+})
+
+describe("dispatch — fast-deny routes resume after replying", () => {
+  test("replies before fetching messages, then resumes with routing from the latest user message", async () => {
+    const messages = [
+      {
+        info: { role: "user", agent: "builder", model: { providerID: "anthropic", modelID: "claude-sonnet", variant: "high" } },
+        parts: [],
+      },
+    ]
+    const { harness, decision } = await runSpy("enforce", "echo $API_KEY", messages)
+    expect(harness.rootCalls()).toBe(0)
+    expect(harness.listCalls()).toBe(1)
+    expect(harness.order.indexOf("reply")).toBeLessThan(harness.order.indexOf("messages"))
+    expect(harness.replies[0]!.reply).toBe("reject")
+    expect(harness.replies[0]!.message).toContain("API_KEY")
+    expect(harness.resumes).toHaveLength(1)
+    expect(harness.resumes[0]!.routing).toEqual({
+      agent: "builder",
+      model: { providerID: "anthropic", modelID: "claude-sonnet" },
+      variant: "high",
+    })
+    expect(decision.event).toBe("decision")
+    expect(decision.source).toBe("policy")
+    expect(decision.reasonCode).toBe("secret_exposure")
+  })
+
+  test("falls back to the last assistant agent when no user routing is present", async () => {
+    const messages = [{ info: { role: "assistant", agent: "planner" }, parts: [] }]
+    const { harness } = await runSpy("enforce", "rm -rf /", messages)
+    expect(harness.rootCalls()).toBe(0)
+    expect(harness.listCalls()).toBe(1)
+    expect(harness.replies[0]!.reply).toBe("reject")
+    expect(harness.resumes).toHaveLength(1)
+    expect(harness.resumes[0]!.routing).toEqual({ agent: "planner" })
+  })
+
+  test("still resumes without routing when the messages fetch fails", async () => {
+    const { harness } = await runSpy("enforce", "echo $API_KEY", [], { failMessages: true })
+    expect(harness.rootCalls()).toBe(0)
+    expect(harness.listCalls()).toBe(1)
+    expect(harness.replies[0]!.reply).toBe("reject")
+    expect(harness.resumes).toHaveLength(1)
+    expect(harness.resumes[0]!.routing).toEqual({})
+  })
+
+  test("shadow mode allows a fast-deny secret exposure and toasts without fetching messages", async () => {
+    const { harness, decision } = await runSpy("shadow", "echo $API_KEY")
+    expect(harness.rootCalls()).toBe(0)
+    expect(harness.listCalls()).toBe(0)
+    expect(harness.replies[0]!.reply).toBe("once")
+    expect(harness.replies[0]!.message).toBeUndefined()
+    expect(harness.resumes).toHaveLength(0)
+    expect(harness.toasts.some((t) => /shadow mode/i.test(t.message) && /secret_exposure/.test(t.message))).toBe(true)
+    expect(decision.source).toBe("policy")
+    expect(decision.reasonCode).toBe("shadow_secret_exposure")
+  })
+
+  test("still enforces a fast-deny catastrophic delete in shadow mode and routes the resume", async () => {
+    const messages = [{ info: { role: "user", agent: "planner" }, parts: [] }]
+    const { harness, decision } = await runSpy("shadow", "rm -rf /", messages)
+    expect(harness.rootCalls()).toBe(0)
+    expect(harness.listCalls()).toBe(1)
+    expect(harness.replies[0]!.reply).toBe("reject")
+    expect(harness.resumes).toHaveLength(1)
+    expect(harness.resumes[0]!.routing).toEqual({ agent: "planner" })
+    expect(decision.reasonCode).toBe("catastrophic_delete")
   })
 })
 
