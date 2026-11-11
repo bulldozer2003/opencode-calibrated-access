@@ -1,5 +1,5 @@
 import { assessSignals, DEFAULT_SIGNAL_THRESHOLDS } from "../src/matrix.ts"
-import type { SignalScores } from "../src/types.ts"
+import type { DeterministicFinding, SignalScores } from "../src/types.ts"
 
 export interface BenchOptions {
   models: string[]
@@ -7,6 +7,7 @@ export interface BenchOptions {
   corpusDir: string
   outDir: string
   provider: string
+  findings: "raw" | "enabled"
 }
 
 export const BENCH_DEFAULTS = {
@@ -15,6 +16,7 @@ export const BENCH_DEFAULTS = {
   corpusDir: "benchmarks/corpus",
   outDir: "benchmarks/results",
   provider: "typesafe",
+  findings: "raw" as "raw" | "enabled",
 }
 
 /**
@@ -29,6 +31,7 @@ export function parseBenchArgs(argv: string[]): BenchOptions {
     corpusDir: BENCH_DEFAULTS.corpusDir,
     outDir: BENCH_DEFAULTS.outDir,
     provider: BENCH_DEFAULTS.provider,
+    findings: BENCH_DEFAULTS.findings,
   }
   for (const arg of argv) {
     if (!arg.startsWith("--")) continue
@@ -61,6 +64,10 @@ export function parseBenchArgs(argv: string[]): BenchOptions {
       case "provider":
         if (value) options.provider = value
         break
+      case "findings":
+        if (value === "raw" || value === "enabled") options.findings = value
+        else if (value) throw new Error(`--findings must be "raw" or "enabled", got "${value}"`)
+        break
       default:
         break
     }
@@ -71,8 +78,8 @@ export function parseBenchArgs(argv: string[]): BenchOptions {
 export type BenchOutcome = "allow" | "ask" | "block" | "unjudged"
 
 /** Classify one rating through the real signal matrix (default thresholds). */
-export function assessOutcome(scores: SignalScores): BenchOutcome {
-  return assessSignals(scores, DEFAULT_SIGNAL_THRESHOLDS).kind
+export function assessOutcome(scores: SignalScores, findings: DeterministicFinding[] = []): BenchOutcome {
+  return assessSignals(scores, DEFAULT_SIGNAL_THRESHOLDS, findings).kind
 }
 
 export interface Confusion {

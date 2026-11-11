@@ -1,7 +1,5 @@
-import type { Decision, ReviewInput } from "./types.ts"
+import type { Decision, DeterministicFinding, ReviewInput } from "./types.ts"
 import { alternativesFor } from "./alternatives.ts"
-
-const SHELL_COMPOSITION = /[;&|<>`\n]|\$\(|<\(|>\(/
 
 const SECRET_NAME_PATTERN = /(?:^|_)(?:SECRET|TOKEN|API_?KEY|PASSWORD|PASSWD|CREDENTIALS?|ACCESS_?KEY|PRIVATE_?KEY|AUTH)(?:_|\b)/i
 const EXACT_SECRET_NAMES = new Set([
@@ -177,32 +175,47 @@ export function applyDeterministicPolicy(input: ReviewInput): Decision | null {
   const command = commandText(input)
   if (!command) return null
 
-  const fast = fastDeny({ action: input.request.action, resources: input.request.resources })
-  if (fast) return fast
-
-  if (!SHELL_COMPOSITION.test(command) && isRoutineLocalCommand(command)) {
-    return { kind: "allow", reasonCode: "routine_local_command", reason: "Runs a routine local inspection or validation command." }
-  }
-
-  return null
+  const hard = fastFindings({ action: input.request.action, resources: input.request.resources }).find(
+    (finding) => finding.severity === "hard",
+  )
+  return hard ? hardFindingDecision(hard) : null
 }
 
-export function fastDeny(request: { action: string; resources: string[] }): Decision | null {
-  if (request.action !== "bash") return null
+/**
+ * Context-free deterministic findings. Catastrophic deletes stay `hard` (always
+ * enforced); secret exposure is a `caution` handed to the judge so intent can be
+ * weighed. No allow path: every non-hard command reaches the model.
+ */
+export function fastFindings(request: { action: string; resources: string[] }): DeterministicFinding[] {
+  if (request.action !== "bash") return []
 
   const command = request.resources.join(" && ").trim()
-  if (!command) return null
+  if (!command) return []
+
+  const findings: DeterministicFinding[] = []
 
   if (isRootOrHomeRecursiveDelete(command)) {
-    return deny("catastrophic_delete", "Recursively deleting the filesystem root or home directory would cause catastrophic data loss.")
+    findings.push({
+      code: "catastrophic_delete",
+      severity: "hard",
+      message: "Recursively deleting the filesystem root or home directory would cause catastrophic data loss.",
+    })
   }
 
   const exposure = detectSecretExposure(command)
   if (exposure) {
-    return { kind: "deny", reasonCode: exposure.reasonCode, reason: exposure.reason, alternatives: alternativesFor(exposure.reasonCode) }
+    findings.push({
+      code: "secret_exposure",
+      severity: "caution",
+      message: `caution: command matches a secret-file-read pattern (${exposure.reason})`,
+    })
   }
 
-  return null
+  return findings
+}
+
+export function hardFindingDecision(finding: DeterministicFinding): Decision {
+  return { kind: "deny", reasonCode: finding.code, reason: finding.message, alternatives: alternativesFor(finding.code) }
 }
 
 function commandText(input: ReviewInput): string {
@@ -211,17 +224,6 @@ function commandText(input: ReviewInput): string {
 
 function isRootOrHomeRecursiveDelete(command: string): boolean {
   return /(?:^|\s)rm\s+-[^\s]*(?:r[^\s]*f|f[^\s]*r)[^\s]*\s+(?:--\s+)?(?:["']?\/["']?|["']?~["']?|["']?\$HOME["']?)(?:\s|$)/i.test(command)
-}
-
-function isRoutineLocalCommand(command: string): boolean {
-  const value = command.trim()
-  return [
-    /^git\s+(?:status|diff|log|show)(?:\s|$)/,
-    /^(?:npm|pnpm|yarn|bun)\s+(?:test|run\s+(?:test|lint|build|typecheck|check))(?:\s|$)/,
-    /^cargo\s+(?:test|check|build)(?:\s|$)/,
-    /^go\s+test(?:\s|$)/,
-    /^(?:pytest|ruff\s+check|tsc)(?:\s|$)/,
-  ].some((pattern) => pattern.test(value))
 }
 
 const PROHIBITION_PHRASE =

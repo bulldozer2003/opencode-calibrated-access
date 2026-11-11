@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { rateCommand } from "../src/risk-rater.ts"
 import { DEFAULT_SIGNAL_THRESHOLDS } from "../src/matrix.ts"
 import { SIGNAL_DEFINITIONS } from "../src/signals.ts"
+import { PROMPT_VERSION } from "../src/prompt.ts"
 import type { CalibratedConfig, SignalName } from "../src/types.ts"
 import { SIGNAL_NAMES } from "../src/types.ts"
 
@@ -94,6 +95,38 @@ describe("rateCommand", () => {
     expect(instructions).toMatch(/staging/i)
     expect(instructions).toMatch(/secret files/i)
     expect(instructions).toMatch(/off-limits/i)
+  })
+
+  test("sends deterministic findings and the prompt version in the judge state", async () => {
+    let sentBody: unknown = null
+    const fetch: FetchFn = async (_url, opts) => {
+      sentBody = JSON.parse(opts.body as string)
+      return okFetch({ model: "jev-1.13.0", answers: answers() })(_url, opts)
+    }
+    const finding = {
+      code: "secret_exposure" as const,
+      severity: "caution" as const,
+      message: "caution: command matches a secret-file-read pattern (.env)",
+    }
+    await rateCommand("cat .env", ["show the scratch fixture"], testConfig, false, fetch, [finding])
+    const state = (sentBody as any).state
+    expect(state.promptVersion).toBe(PROMPT_VERSION)
+    expect(state.deterministicFindings).toEqual([{ code: "secret_exposure", message: finding.message }])
+    expect(state.findingGuidance).toContain("cautionary pre-checks")
+    expect(state.findingGuidance).toContain("not verdicts")
+  })
+
+  test("always carries the prompt version but omits findings when none are supplied", async () => {
+    let sentBody: unknown = null
+    const fetch: FetchFn = async (_url, opts) => {
+      sentBody = JSON.parse(opts.body as string)
+      return okFetch({ model: "jev-1.13.0", answers: answers() })(_url, opts)
+    }
+    await rateCommand("git status", [], testConfig, false, fetch)
+    const state = (sentBody as any).state
+    expect(state.promptVersion).toBe(PROMPT_VERSION)
+    expect(state.deterministicFindings).toBeUndefined()
+    expect(state.findingGuidance).toBeUndefined()
   })
 
   test("sends isRetry=true in state when retrying after denial", async () => {
@@ -234,6 +267,27 @@ describe("rateCommand (openai-compatible provider)", () => {
     expect(system).toMatch(/staging/i)
     expect(system).toMatch(/secret files/i)
     expect(system).toMatch(/off-limits/i)
+  })
+
+  test("includes the finding guidance and deterministic findings in the OpenAI prompt", async () => {
+    let sentBody: unknown = null
+    const fetch: FetchFn = async (_url, opts) => {
+      sentBody = JSON.parse(opts.body as string)
+      return { ok: true, json: async () => ({ choices: [{ message: { content: signalJson() } }] }) } as any
+    }
+    const finding = {
+      code: "secret_exposure" as const,
+      severity: "caution" as const,
+      message: "caution: command matches a secret-file-read pattern (.env)",
+    }
+    await rateCommand("cat .env", ["show the scratch fixture"], openAIConfig, false, fetch, [finding])
+    const system = (sentBody as any).messages[0].content as string
+    const user = (sentBody as any).messages[1].content as string
+    expect(system).toContain("cautionary pre-checks")
+    expect(system).toContain("not verdicts")
+    expect(user).toContain("Deterministic findings")
+    expect(user).toContain("caution: command matches a secret-file-read pattern")
+    expect(user).toContain(`Prompt version: ${PROMPT_VERSION}`)
   })
 
   test("sends isRetry in prompt when retrying after denial", async () => {

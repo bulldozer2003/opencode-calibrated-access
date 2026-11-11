@@ -12,15 +12,20 @@
  *
  *   bun run benchmarks/rater-bench.ts
  *   bun run benchmarks/rater-bench.ts --models=jev-latest --repeats=5
+ *   bun run benchmarks/rater-bench.ts --findings=enabled
  *
- * Output: benchmarks/results/rater-bench.json (full data) and
- * benchmarks/results/rater-bench.md (human-readable headline).
+ * `--findings=raw` (default) measures raw model behaviour; `--findings=enabled`
+ * attaches deterministic findings to the judge state and applies the matrix
+ * ask-floor. Output: benchmarks/results/rater-bench-raw.json/.md (raw) and
+ * benchmarks/results/findings/rater-bench-findings.json/.md (enabled).
  */
 import { mkdirSync, writeFileSync } from "fs"
 import { join } from "path"
 import { rateCommand } from "../src/risk-rater.ts"
 import { parseConfig } from "../src/config.ts"
-import { SIGNAL_NAMES, type SignalName, type SignalScores } from "../src/types.ts"
+import { fastFindings } from "../src/policy.ts"
+import { PROMPT_VERSION } from "../src/prompt.ts"
+import { SIGNAL_NAMES, type DeterministicFinding, type SignalName, type SignalScores } from "../src/types.ts"
 import { loadCorpus, type CorpusEntry } from "./corpus-schema.ts"
 import { assessOutcome, confusion, parseBenchArgs, type BenchOutcome, type ConfusionInput } from "./bench-core.ts"
 import { separationMargin, summarize, sweepThresholds, type SeparationMargin, type Summary, type ThresholdPoint } from "./bench-stats.ts"
@@ -42,8 +47,11 @@ interface ScenarioResult {
 
 interface ModelReport {
   model: string
+  findingsMode: "raw" | "enabled"
+  promptVersion: string
   calls: number
   errors: Array<{ id: string; repeat: number; message: string }>
+  latencies: number[]
   signalDistributions: Record<SignalName, Summary>
   scenarios: Record<string, ScenarioResult>
   separation: Record<SignalName, SeparationMargin>
@@ -74,6 +82,7 @@ async function benchModel(
   provider: string,
   entries: CorpusEntry[],
   repeats: number,
+  findingsMode: "raw" | "enabled",
 ): Promise<ModelReport> {
   const config = parseConfig({
     provider,
@@ -83,8 +92,11 @@ async function benchModel(
   })
   const report: ModelReport = {
     model,
+    findingsMode,
+    promptVersion: PROMPT_VERSION,
     calls: 0,
     errors: [],
+    latencies: [],
     signalDistributions: {} as Record<SignalName, Summary>,
     scenarios: {},
     separation: {} as Record<SignalName, SeparationMargin>,
@@ -99,17 +111,21 @@ async function benchModel(
   for (const entry of entries) {
     const perSignalValues: Record<SignalName, number[]> = {} as Record<SignalName, number[]>
     for (const signal of SIGNAL_NAMES) perSignalValues[signal] = []
+    const findings: DeterministicFinding[] = findingsMode === "enabled" ? fastFindings({ action: "bash", resources: [entry.command] }) : []
     const outcomes: BenchOutcome[] = []
     for (let repeat = 0; repeat < repeats; repeat++) {
       report.calls += 1
       let scores: SignalScores | undefined
+      const started = performance.now()
       try {
-        scores = await rateCommand(entry.command, entry.userContext, config, false)
+        scores = await rateCommand(entry.command, entry.userContext, config, false, undefined, findings)
       } catch (error) {
+        report.latencies.push(performance.now() - started)
         report.errors.push({ id: entry.id, repeat, message: error instanceof Error ? error.message : String(error) })
         continue
       }
-      outcomes.push(assessOutcome(scores))
+      report.latencies.push(performance.now() - started)
+      outcomes.push(assessOutcome(scores, findings))
       for (const signal of SIGNAL_NAMES) {
         const probability = scores.signals[signal].probability
         perSignalValues[signal].push(probability)
@@ -188,6 +204,13 @@ function formatSignalTable(report: ModelReport, entries: CorpusEntry[]): string 
   return lines.join("\n")
 }
 
+function percentile(values: number[], p: number): number {
+  if (values.length === 0) return 0
+  const sorted = [...values].sort((a, b) => a - b)
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1))
+  return sorted[index] ?? 0
+}
+
 function renderMarkdown(modelReports: ModelReport[], entries: CorpusEntry[], repeats: number): string {
   const byCategory = new Map<string, number>()
   for (const entry of entries) byCategory.set(entry.category, (byCategory.get(entry.category) ?? 0) + 1)
@@ -198,11 +221,17 @@ function renderMarkdown(modelReports: ModelReport[], entries: CorpusEntry[], rep
   lines.push(`Corpus: ${entries.length} scenarios (${[...byCategory].map(([k, v]) => `${k}=${v}`).join(", ")})`)
   lines.push(`Repeats per scenario per model: ${repeats}`)
   lines.push(`Models: ${modelReports.map((r) => r.model).join(", ")}`)
+  lines.push(`Findings mode: ${[...new Set(modelReports.map((r) => r.findingsMode))].join(", ")}; promptVersion: ${[...new Set(modelReports.map((r) => r.promptVersion))].join(", ")}`)
   lines.push("")
   for (const report of modelReports) {
     lines.push(`## Model: ${report.model}`)
     lines.push("")
     lines.push(`${report.calls} calls, ${report.errors.length} errors.`)
+    lines.push(
+      `Model-call latency: mean ${(report.latencies.reduce((a, b) => a + b, 0) / Math.max(1, report.latencies.length)).toFixed(0)} ms, ` +
+        `p50 ${percentile(report.latencies, 50).toFixed(0)} ms, p95 ${percentile(report.latencies, 95).toFixed(0)} ms, ` +
+        `max ${Math.max(0, ...report.latencies).toFixed(0)} ms.`,
+    )
     lines.push("")
     lines.push(formatSignalTable(report, entries))
     lines.push("")
@@ -227,17 +256,20 @@ async function main(): Promise<void> {
 
   const reports: ModelReport[] = []
   for (const model of options.models) {
-    console.log(`==> model ${model}`)
-    const report = await benchModel(model, options.provider, entries, options.repeats)
+    console.log(`==> model ${model} (findings=${options.findings})`)
+    const report = await benchModel(model, options.provider, entries, options.repeats, options.findings)
     reports.push(report)
     console.log(`    ${report.calls} calls, ${report.errors.length} errors, accuracy ${(report.confusion.accuracy * 100).toFixed(1)}%`)
   }
 
-  mkdirSync(options.outDir, { recursive: true })
+  const outDir = options.findings === "enabled" ? join(options.outDir, "findings") : options.outDir
+  mkdirSync(outDir, { recursive: true })
   const payload = {
     generatedAt: new Date().toISOString(),
     repeats: options.repeats,
     provider: options.provider,
+    findings: options.findings,
+    promptVersion: PROMPT_VERSION,
     corpus: {
       dir: options.corpusDir,
       total: entries.length,
@@ -249,9 +281,15 @@ async function main(): Promise<void> {
       ),
     },
     models: reports,
+    latency: {
+      calls: reports.reduce((total, report) => total + report.latencies.length, 0),
+      p50: percentile(reports.flatMap((report) => report.latencies), 50),
+      p95: percentile(reports.flatMap((report) => report.latencies), 95),
+    },
   }
-  const jsonPath = join(options.outDir, "rater-bench.json")
-  const mdPath = join(options.outDir, "rater-bench.md")
+  const suffix = options.findings === "enabled" ? "-findings" : "-raw"
+  const jsonPath = join(outDir, `rater-bench${suffix}.json`)
+  const mdPath = join(outDir, `rater-bench${suffix}.md`)
   writeFileSync(jsonPath, JSON.stringify(payload, null, 2) + "\n", "utf-8")
   writeFileSync(mdPath, renderMarkdown(reports, entries, options.repeats), "utf-8")
   console.log(`Wrote ${jsonPath}`)
