@@ -152,6 +152,23 @@ describe("rateCommand", () => {
       rateCommand("rm -rf /", [], testConfig, false, okFetch({ model: "jev-1.13.0", answers: partial })),
     ).rejects.toThrow(/System One API response missing required score/)
   })
+
+  test("surfaces usage and cost from the System One response", async () => {
+    const result = await rateCommand("ls", [], testConfig, false, okFetch({
+      model: "jev-1.13.0",
+      answers: answers(),
+      usage: { input_tokens: 812, output_tokens: 120 },
+      cost: { usd: 0.0000341 },
+    }))
+    expect(result.usage).toEqual({ input_tokens: 812, output_tokens: 120 })
+    expect(result.cost).toEqual({ usd: 0.0000341 })
+  })
+
+  test("leaves usage and cost undefined when the System One response omits them", async () => {
+    const result = await rateCommand("ls", [], testConfig, false, okFetch({ model: "jev-1.13.0", answers: answers() }))
+    expect(result.usage).toBeUndefined()
+    expect(result.cost).toBeUndefined()
+  })
 })
 
 describe("rateCommand (openai-compatible provider)", () => {
@@ -374,5 +391,23 @@ describe("rateCommand (openai-compatible provider)", () => {
     await expect(
       rateCommand("rm -rf /", [], openAIConfig, false, openAIOkFetch('{"destructive":{"score":1e400,"confidence":0.9},"secret_exposure":{"score":2,"confidence":0.8}}')),
     ).rejects.toThrow(/missing required score/)
+  })
+
+  test("surfaces usage from the openai chat-completions response", async () => {
+    const fetch: FetchFn = async () => ({
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content: signalJson() } }],
+        usage: { prompt_tokens: 700, completion_tokens: 80 },
+      }),
+    }) as any
+    const result = await rateCommand("ls", [], openAIConfig, false, fetch)
+    expect(result.usage).toEqual({ prompt_tokens: 700, completion_tokens: 80 })
+  })
+
+  test("leaves usage undefined when the openai response omits it", async () => {
+    const result = await rateCommand("ls", [], openAIConfig, false, openAIOkFetch(signalJson()))
+    expect(result.usage).toBeUndefined()
+    expect(result.cost).toBeUndefined()
   })
 })

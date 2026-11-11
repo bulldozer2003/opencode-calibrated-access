@@ -226,6 +226,8 @@ function writeDiag(
     reasonCode: decision.reasonCode,
     reason: decision.reason,
     ...(signals ? { signals: signals.signals } : {}),
+    ...(signals?.usage !== undefined ? { usage: signals.usage } : {}),
+    ...(signals?.cost !== undefined ? { cost: signals.cost } : {}),
   })
 }
 
