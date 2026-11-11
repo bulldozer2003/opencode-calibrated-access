@@ -100,18 +100,21 @@ export async function reviewAndReply(
     } else if (cached) {
       decision = cached
     } else {
-      const model = await modelDecision(context, request, messages, config, signal, isRetry, fetchFn)
+      const model = await modelDecision(context, request, messages, config, isRetry, fetchFn)
       decision = model.decision
       signals = model.signals
     }
 
+    // A model review can finish after the request is already resolved: `opencode
+    // run`'s headless client auto-rejects on `permission.asked` without waiting
+    // for the plugin. Record the completed review for calibration, but never
+    // reply or cache an approval for a permission that is already settled.
+    writeDiag(config, request, startedAt, decision, sourceLabel(effectivePolicy, cached, config), signals)
     if (signal.aborted) return
 
     if (config.sessionApprovals && cacheKey && decision.kind === "allow" && !decision.reasonCode.startsWith("shadow_")) {
       cache.add(rootSessionID, request.action, request.always)
     }
-
-    writeDiag(config, request, startedAt, decision, sourceLabel(effectivePolicy, cached, config), signals)
 
     if (decision.kind === "allow") {
       await client.reply({ sessionID: request.sessionID, requestID: request.id, reply: "once", protocol: request.protocol })
@@ -151,15 +154,10 @@ async function modelDecision(
   request: PermissionRequest,
   userMessages: string[],
   config: CalibratedConfig,
-  signal: AbortSignal,
   isRetry: boolean,
   fetchFn?: FetchFn,
 ): Promise<{ decision: Decision; signals: SignalScores }> {
   const raw = await rateCommand(request.resources.join(" && "), userMessages, config, isRetry, fetchFn)
-  if (signal.aborted) {
-    return { decision: { kind: "deny", reasonCode: "aborted", reason: "Review was cancelled." }, signals: raw }
-  }
-
   const assessment = assessSignals(raw, config.signalThresholds)
 
   if (config.mode === "shadow") {
