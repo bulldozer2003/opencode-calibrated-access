@@ -55,6 +55,11 @@ describe("effectiveOutcome", () => {
     expect(effectiveOutcome("allow", "shadow_appeal_exhausted")).toBe("block")
     expect(effectiveOutcome("allow", "appeal_exhausted")).toBe("block")
   })
+
+  test("unjustified_retry is a block, matching the enforce truth", () => {
+    expect(effectiveOutcome("deny", "unjustified_retry")).toBe("block")
+    expect(effectiveOutcome("allow", "shadow_unjustified_retry")).toBe("block")
+  })
 })
 
 describe("shadow_* reason codes", () => {
@@ -63,6 +68,7 @@ describe("shadow_* reason codes", () => {
     shadow_block: "block",
     shadow_unjudged: "block",
     shadow_appeal_exhausted: "block",
+    shadow_unjustified_retry: "block",
   }
 
   test("every enumerated shadow code maps to the enforce-mode outcome for its stripped code", () => {

