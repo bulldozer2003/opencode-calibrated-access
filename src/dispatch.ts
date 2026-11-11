@@ -6,7 +6,7 @@ import { PROMPT_VERSION } from "./prompt.ts"
 import { SessionApprovalCache } from "./cache.ts"
 import { buildContinuationMessage, buildDenialMessage } from "./resume.ts"
 import { writeDiagnostic } from "./diagnostics.ts"
-import { collectUserMessages, extractRetryJustification, isPluginContinuation, lastAssistantAgent, latestUserRouting } from "./context.ts"
+import { collectUserMessages, extractRetryJustification, lastAssistantAgent, lastBlockedCommand, latestUserRouting } from "./context.ts"
 import { alternativesFor } from "./alternatives.ts"
 
 const ALWAYS_ENFORCED_POLICY_CODES = new Set(["catastrophic_delete", "explicit_user_prohibition"])
@@ -26,34 +26,23 @@ export async function reviewAndReply(
     const findings = fastFindings({ action: request.action, resources: [...request.resources] })
     const hard = findings.find((finding) => finding.severity === "hard")
     if (hard) {
+      // The only `hard` finding is catastrophic_delete, an always-enforced code,
+      // so a hard fast-path decision is never projected to shadow mode.
       const hardDecision = hardFindingDecision(hard)
-      const shadowFast =
-        config.mode === "shadow" && !ALWAYS_ENFORCED_POLICY_CODES.has(hardDecision.reasonCode)
-          ? { kind: "allow" as const, reasonCode: `shadow_${hardDecision.reasonCode}`, reason: hardDecision.reason }
-          : undefined
-      const effectiveFast = shadowFast ?? hardDecision
-      if (shadowFast) {
-        context.showToast?.({
-          title: "Shadow mode",
-          message: `Shadow mode: would have blocked (${hardDecision.reasonCode})`,
-          variant: "info",
-          duration: 5_000,
-        })
-      }
-      writeDiag(config, request, startedAt, effectiveFast, "policy", undefined, findings)
-      if (effectiveFast.kind === "allow") {
+      writeDiag(config, request, startedAt, hardDecision, "policy", undefined, findings)
+      if (hardDecision.kind === "allow") {
         await client.reply({ sessionID: request.sessionID, requestID: request.id, reply: "once", protocol: request.protocol })
       } else {
         await client.reply({
           sessionID: request.sessionID,
           requestID: request.id,
           reply: "reject",
-          message: buildDenialMessage(effectiveFast.reason, effectiveFast.alternatives),
+          message: buildDenialMessage(hardDecision.reason, hardDecision.alternatives),
           protocol: request.protocol,
         })
-        context.showToast?.({ title: "Blocked", message: effectiveFast.reason, variant: "warning", duration: 4_000 })
+        context.showToast?.({ title: "Blocked", message: hardDecision.reason, variant: "warning", duration: 4_000 })
         routing = resolveRouting(await listMessages(context, request.sessionID))
-        context.resumeAfterDenial?.(request.sessionID, buildContinuationMessage(effectiveFast.reason, request.resources, effectiveFast.alternatives), routing)
+        context.resumeAfterDenial?.(request.sessionID, buildContinuationMessage(hardDecision.reason, request.resources, hardDecision.alternatives), routing)
       }
       return
     }
@@ -94,13 +83,14 @@ export async function reviewAndReply(
       })
     }
 
-    const isRetry = detectRetryAfterDenial(rawMessages)
+    const isRetry = detectRetryAfterDenial(rawMessages, request.resources.join(" && "))
     const justification = isRetry ? extractRetryJustification(rawMessages) : undefined
     const appealExhausted = isRetry && cache.hasAppeal(rootSessionID, request.action, request.always)
     const cautions = findings.filter((finding) => finding.severity === "caution")
 
     let decision: Decision
     let signals: SignalScores | undefined
+    let justified = false
     if (appealExhausted) {
       const reason = "The one appeal for this request was already used; a second retry is blocked outright."
       if (config.mode === "shadow") {
@@ -117,6 +107,7 @@ export async function reviewAndReply(
       const model = await modelDecision(context, request, messages, config, isRetry, cautions, fetchFn, justification)
       decision = model.decision
       signals = model.signals
+      justified = justification !== undefined
     }
 
     if (isRetry && justification && !appealExhausted) {
@@ -127,7 +118,7 @@ export async function reviewAndReply(
     // run`'s headless client auto-rejects on `permission.asked` without waiting
     // for the plugin. Record the completed review for calibration, but never
     // reply or cache an approval for a permission that is already settled.
-    writeDiag(config, request, startedAt, decision, appealExhausted ? "appeal" : sourceLabel(effectivePolicy, cached, config), signals, cautions)
+    writeDiag(config, request, startedAt, decision, appealExhausted ? "appeal" : sourceLabel(effectivePolicy, cached, config), signals, cautions, justified)
     if (signal.aborted) return
 
     if (config.sessionApprovals && cacheKey && decision.kind === "allow" && !decision.reasonCode.startsWith("shadow_")) {
@@ -281,6 +272,7 @@ function writeDiag(
   source: string,
   signals: SignalScores | undefined,
   findings: DeterministicFinding[] = [],
+  justified = false,
 ): void {
   writeDiagnostic(config.diagnosticsPath, {
     timestamp: new Date().toISOString(),
@@ -296,6 +288,7 @@ function writeDiag(
     decision: decision.kind,
     reasonCode: decision.reasonCode,
     reason: decision.reason,
+    ...(justified ? { justified: true } : {}),
     ...(findings.length > 0 ? { findings: findings.map((finding) => ({ code: finding.code, severity: finding.severity, message: finding.message })) } : {}),
     ...(signals ? { signals: signals.signals } : {}),
     ...(signals?.usage !== undefined ? { usage: signals.usage } : {}),
@@ -326,11 +319,7 @@ function resolveRouting(messages: unknown[]): ResumeRouting {
   return agent ? { agent } : {}
 }
 
-function detectRetryAfterDenial(messages: unknown[]): boolean {
-  return messages.some((msg) => {
-    const text = typeof msg === "object" && msg !== null && "text" in (msg as Record<string, unknown>)
-      ? (msg as Record<string, unknown>).text
-      : undefined
-    return typeof text === "string" && isPluginContinuation(text)
-  })
+function detectRetryAfterDenial(messages: unknown[], command: string): boolean {
+  const blocked = lastBlockedCommand(messages)
+  return blocked !== undefined && blocked === command
 }

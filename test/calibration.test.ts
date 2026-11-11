@@ -2,7 +2,9 @@ import { describe, expect, test } from "bun:test"
 import { readFileSync } from "fs"
 import { fileURLToPath } from "url"
 import { dirname, join } from "path"
+import { readdirSync } from "fs"
 import {
+  SHADOW_REASON_CODES,
   analyzeCalibration,
   candidateThresholds,
   effectiveOutcome,
@@ -20,6 +22,8 @@ import { DEFAULT_SIGNAL_THRESHOLDS } from "../src/matrix.ts"
 const here = dirname(fileURLToPath(import.meta.url))
 const FIXTURE = join(here, "fixtures", "calibration-sample.jsonl")
 const fixtureLines = readFileSync(FIXTURE, "utf-8").split("\n")
+const REVIEW_FIXTURE = join(here, "fixtures", "calibration-review-findings.jsonl")
+const reviewFixtureLines = readFileSync(REVIEW_FIXTURE, "utf-8").split("\n")
 
 describe("effectiveOutcome", () => {
   test("maps recorded reason codes to the enforce-mode outcome", () => {
@@ -45,6 +49,67 @@ describe("effectiveOutcome", () => {
   test("unknown reason codes fall back to the recorded decision", () => {
     expect(effectiveOutcome("allow", "something_new")).toBe("allow")
     expect(effectiveOutcome("deny", "something_new")).toBe("block")
+  })
+
+  test("shadow_appeal_exhausted is a block, matching the enforce truth", () => {
+    expect(effectiveOutcome("allow", "shadow_appeal_exhausted")).toBe("block")
+    expect(effectiveOutcome("allow", "appeal_exhausted")).toBe("block")
+  })
+})
+
+describe("shadow_* reason codes", () => {
+  const EXPECTED: Record<string, "allow" | "ask" | "block"> = {
+    shadow_ask: "ask",
+    shadow_block: "block",
+    shadow_unjudged: "block",
+    shadow_appeal_exhausted: "block",
+  }
+
+  test("every enumerated shadow code maps to the enforce-mode outcome for its stripped code", () => {
+    for (const code of SHADOW_REASON_CODES) {
+      const expected = EXPECTED[code]!
+      expect(expected).toBeDefined()
+      expect(effectiveOutcome("allow", code)).toBe(expected)
+      const stripped = code.replace(/^shadow_/, "")
+      expect(effectiveOutcome("deny", stripped)).toBe(expected)
+    }
+  })
+
+  test("source scan: every concrete shadow_* literal in src/ is explicitly enumerated", () => {
+    const srcDir = join(here, "..", "src")
+    const found = new Set<string>()
+    for (const file of readdirSync(srcDir).filter((name) => name.endsWith(".ts"))) {
+      const text = readFileSync(join(srcDir, file), "utf-8")
+      for (const match of text.matchAll(/shadow_[A-Za-z0-9_]+/g)) found.add(match[0])
+    }
+    expect(found.size).toBeGreaterThan(0)
+    for (const code of found) expect(SHADOW_REASON_CODES).toContain(code)
+  })
+})
+
+describe("review-findings fixture — appeal source and justified reconstruction", () => {
+  test("classifies a shadow_appeal_exhausted event as block and excludes source appeal from model-reviewed", () => {
+    const parsed = parseCalibrationEvents(reviewFixtureLines)
+    const appeal = parsed.decisions.find((decision) => decision.sessionID === "sAppeal")!
+    expect(appeal.outcome).toBe("block")
+
+    const report = analyzeCalibration(reviewFixtureLines)
+    expect(report.decisionEvents).toBe(2)
+    expect(report.modelReviewed).toBe(1)
+  })
+
+  test("parses the justified flag off a decision event", () => {
+    const parsed = parseCalibrationEvents(reviewFixtureLines)
+    const justified = parsed.decisions.find((decision) => decision.sessionID === "sJustified")!
+    expect(justified.justified).toBe(true)
+    expect(justified.outcome).toBe("ask")
+  })
+
+  test("a justified-retry event reconstructs as ask — no bogus allow->block flip row", () => {
+    const parsed = parseCalibrationEvents(reviewFixtureLines)
+    const justified = parsed.decisions.find((decision) => decision.sessionID === "sJustified")!
+    const rows = candidateThresholds([justified], DEFAULT_SIGNAL_THRESHOLDS)
+    expect(rows).toHaveLength(0)
   })
 })
 

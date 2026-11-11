@@ -57,6 +57,14 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 plugin_spec="${CALIBRATED_PLUGIN:-$repo_root}"
 
+# Expected judge prompt version, read from src/prompt.ts (the source of truth)
+# so this gate can never drift from the constant the plugin actually writes.
+prompt_version="$(sed -n 's/^export const PROMPT_VERSION = "\([^"]*\)".*/\1/p' "$repo_root/src/prompt.ts" | head -n 1)"
+if [ -z "$prompt_version" ]; then
+  echo "FAIL: could not read PROMPT_VERSION from $repo_root/src/prompt.ts." >&2
+  exit 2
+fi
+
 # Scenario 2 needs a live model key. Mirror bun's ./.env auto-load (which the
 # integration suite relies on) without ever printing the value.
 if [ -z "${TYPESAFE_API_KEY:-}" ] && [ -f "$repo_root/.env" ]; then
@@ -218,7 +226,7 @@ s1_decision="$(grep '"event":"decision"' "$diag" 2>/dev/null | grep '"command":"
 s1_finding=false
 s1_prompt_version=false
 if printf '%s' "$s1_decision" | grep -q '"code":"secret_exposure"'; then s1_finding=true; fi
-if printf '%s' "$s1_decision" | grep -q '"promptVersion":"2"'; then s1_prompt_version=true; fi
+if printf '%s' "$s1_decision" | grep -q '"promptVersion":"'"$prompt_version"'"'; then s1_prompt_version=true; fi
 if [ -n "$resume_lines" ]; then
   last_resume="$(printf '%s\n' "$resume_lines" | tail -n 1)"
   session_id="$(printf '%s' "$last_resume" | sed -n 's/.*"sessionID":"\([^"]*\)".*/\1/p')"
@@ -321,7 +329,7 @@ fi
 
 echo "FAIL:"
 if [ "$s1_pass" != "true" ]; then
-  echo "      scenario 1: no decision event with a secret_exposure finding and promptVersion 2."
+  echo "      scenario 1: no decision event with a secret_exposure finding and promptVersion $prompt_version."
   if [ -z "$s1_decision" ]; then
     echo "      diagnostics exist but contain no decision event for 'cat .env'."
   else
