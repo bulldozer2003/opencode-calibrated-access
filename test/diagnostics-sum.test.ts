@@ -135,6 +135,65 @@ describe("summarizeDiagnostics — model review & grouping", () => {
   })
 })
 
+describe("summarizeDiagnostics — per-command-pattern score history", () => {
+  test("computes mean, max and variance per signal per command pattern", () => {
+    const lines = [
+      line({ event: "decision", action: "bash", source: "typesafe", signals: { exfiltration: { probability: 0.2, confidence: 0.9 } } }),
+      line({ event: "decision", action: "bash", source: "typesafe", signals: { exfiltration: { probability: 0.6, confidence: 0.9 } } }),
+      line({ event: "decision", action: "bash", source: "typesafe", signals: { exfiltration: { probability: 0.4, confidence: 0.9 } } }),
+    ]
+    const s = summarizeDiagnostics(lines)
+    const stats = s.perCommand["bash"].signals.exfiltration!
+    expect(stats.count).toBe(3)
+    expect(stats.mean).toBeCloseTo(0.4, 10)
+    expect(stats.max).toBeCloseTo(0.6, 10)
+    expect(stats.variance).toBeCloseTo(0.0266667, 6)
+  })
+
+  test("groups histories by command pattern and counts decision outcomes", () => {
+    const lines = [
+      line({ event: "decision", action: "bash", source: "typesafe", decision: "allow", signals: { exfiltration: { probability: 0.2 } } }),
+      line({ event: "decision", action: "bash", source: "typesafe", decision: "deny", signals: { exfiltration: { probability: 0.6 } } }),
+      line({ event: "decision", action: "external_directory", source: "typesafe", decision: "allow", signals: { exfiltration: { probability: 0.9 } } }),
+    ]
+    const s = summarizeDiagnostics(lines)
+    expect(s.perCommand["bash"].count).toBe(2)
+    expect(s.perCommand["bash"].outcomes).toEqual({ allow: 1, deny: 1 })
+    expect(s.perCommand["external_directory"].count).toBe(1)
+    expect(s.perCommand["bash"].signals.exfiltration!.mean).toBeCloseTo(0.4, 10)
+    expect(s.perCommand["external_directory"].signals.exfiltration!.mean).toBeCloseTo(0.9, 10)
+  })
+
+  test("counts events without signal data but excludes them from signal stats", () => {
+    const lines = [
+      line({ event: "decision", action: "bash", source: "typesafe", decision: "allow", signals: { exfiltration: { probability: 0.2 } } }),
+      line({ event: "decision", action: "bash", source: "typesafe", decision: "allow" }),
+      line({ event: "decision", action: "bash", source: "policy", decision: "deny" }),
+      line({ event: "decision", action: "bash", source: "typesafe", decision: "allow", signals: null }),
+    ]
+    const s = summarizeDiagnostics(lines)
+    expect(s.perCommand["bash"].count).toBe(4)
+    expect(s.perCommand["bash"].outcomes).toEqual({ allow: 3, deny: 1 })
+    expect(s.perCommand["bash"].signals.exfiltration!.count).toBe(1)
+    expect(s.perCommand["bash"].signals.exfiltration!.mean).toBeCloseTo(0.2, 10)
+  })
+
+  test("tolerates partial signal maps and non-numeric probabilities", () => {
+    const lines = [
+      line({ event: "decision", action: "bash", source: "typesafe", signals: { exfiltration: { probability: 0.2 } } }),
+      line({ event: "decision", action: "bash", source: "typesafe", signals: { destructive: { probability: 0.5 } } }),
+      line({ event: "decision", action: "bash", source: "typesafe", signals: { exfiltration: { probability: "0.6" } } }),
+      line({ event: "decision", action: "bash", source: "typesafe", signals: { exfiltration: { confidence: 0.9 } } }),
+    ]
+    const s = summarizeDiagnostics(lines)
+    expect(s.perCommand["bash"].count).toBe(4)
+    expect(s.perCommand["bash"].signals.exfiltration!.count).toBe(1)
+    expect(s.perCommand["bash"].signals.exfiltration!.mean).toBeCloseTo(0.2, 10)
+    expect(s.perCommand["bash"].signals.destructive!.count).toBe(1)
+    expect(s.perCommand["bash"].signals.destructive!.mean).toBeCloseTo(0.5, 10)
+  })
+})
+
 describe("formatSummary", () => {
   test("renders the headline sums", () => {
     const s = summarizeDiagnostics([
@@ -145,5 +204,17 @@ describe("formatSummary", () => {
     expect(text).toContain("input tokens: 1000000")
     expect(text).toContain("output tokens: 125")
     expect(text).toContain("estimated")
+  })
+
+  test("renders per-command-pattern signal history", () => {
+    const s = summarizeDiagnostics([
+      line({ event: "decision", action: "bash", source: "typesafe", signals: { exfiltration: { probability: 0.2 } } }),
+      line({ event: "decision", action: "bash", source: "typesafe", signals: { exfiltration: { probability: 0.6 } } }),
+    ])
+    const text = formatSummary(s)
+    expect(text).toContain("Per command pattern")
+    expect(text).toContain("bash")
+    expect(text).toContain("exfiltration")
+    expect(text).toContain("mean 0.400")
   })
 })
