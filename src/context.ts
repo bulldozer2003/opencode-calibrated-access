@@ -18,7 +18,7 @@ export function normalizeAskedEvent(event: unknown): PermissionRequest | null {
       sessionID: data.sessionID,
       action: data.action,
       resources,
-      always: stringArray(data.always),
+      always: stringArray(data.always ?? data.save),
       protocol: "v2",
     }
   }
@@ -46,12 +46,19 @@ function normalizeStableAsk(data: Record<string, unknown> | null): PermissionReq
   }
 }
 
-export function normalizeRepliedEvent(event: unknown): { sessionID: string; requestID: string } | null {
+export function normalizeRepliedEvent(
+  event: unknown,
+): { sessionID: string; requestID: string; reply?: string } | null {
   if (!isRecord(event) || !["permission.v2.replied", "permission.replied"].includes(String(event.type))) return null
   const data = payload(event)
   const requestID = data?.requestID ?? data?.permissionID
   if (!isRecord(data) || typeof data.sessionID !== "string" || typeof requestID !== "string") return null
-  return { sessionID: data.sessionID, requestID }
+  const reply = data.reply ?? data.response
+  return {
+    sessionID: data.sessionID,
+    requestID,
+    ...(typeof reply === "string" ? { reply } : {}),
+  }
 }
 
 export function isPluginContinuation(text: string): boolean {
