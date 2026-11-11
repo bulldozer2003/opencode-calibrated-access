@@ -9,6 +9,8 @@
   },
   "files": [
     "src/",
+    "scripts/",
+    "skills/",
     "LICENSE",
     "README.md",
     "opencode.jsonc.example"
