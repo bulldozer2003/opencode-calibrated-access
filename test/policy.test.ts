@@ -260,6 +260,33 @@ describe("detectSecretExposure — allowed secret-file uses", () => {
   }
 })
 
+describe("detectSecretExposure — content is not a read", () => {
+  const safe = [
+    "cat > notes.md <<'EOF'\nThe plugin flags cat .env as a secret read.\nEOF",
+    "cat > .env <<'EOF'\nFOO=bar\nEOF",
+    "bun -e 'const home = process.env.HOME; const f = (l) => l'",
+    "node -e 'const home = process.env.HOME; const f = (l) => l'",
+    "ls -la .env 2>&1 && echo done",
+  ]
+  for (const command of safe) {
+    test(`allows: ${JSON.stringify(command).slice(0, 70)}`, () => {
+      expect(detectSecretExposure(command)).toBeNull()
+    })
+  }
+
+  test("still blocks a real .env read with stderr redirection", () => {
+    expect(detectSecretExposure("cat .env 2>&1")?.reasonCode).toBe("secret_exposure")
+  })
+
+  test("still blocks a real .env read redirected to a file", () => {
+    expect(detectSecretExposure("cat .env > /tmp/out.txt")?.reasonCode).toBe("secret_exposure")
+  })
+
+  test("still blocks an environment dump to a file", () => {
+    expect(detectSecretExposure("env > creds.txt")?.reasonCode).toBe("secret_exposure")
+  })
+})
+
 describe("applyDeterministicPolicy — secret exposure findings", () => {
   test("does not short-circuit secret exposure; the finding reaches the judge", () => {
     expect(applyDeterministicPolicy(input("echo $API_KEY"))).toBeNull()

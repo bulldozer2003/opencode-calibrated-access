@@ -23,14 +23,14 @@ const SOURCED_PREFIX = /^\s*(?:\.|source)\s/
 export type SecretExposure = { reasonCode: "secret_exposure"; reason: string }
 
 export function detectSecretExposure(command: string): SecretExposure | null {
-  const effective = withoutProcessSubstitution(command)
+  const effective = withoutHeredocBodies(withoutProcessSubstitution(command))
   const secretVars = secretVarNames(effective)
 
   if (isPrintCommandOfSecret(effective, secretVars)) {
     return exposure(`env var ${secretVars[0] ?? "unknown"}`, "stdout/arguments")
   }
 
-  const secretFile = secretFileRead(command)
+  const secretFile = secretFileRead(effective)
   if (secretFile) {
     return {
       reasonCode: "secret_exposure",
@@ -38,7 +38,7 @@ export function detectSecretExposure(command: string): SecretExposure | null {
     }
   }
 
-  const stagedFile = secretFileStaged(command)
+  const stagedFile = secretFileStaged(effective)
   if (stagedFile) {
     return {
       reasonCode: "secret_exposure",
@@ -86,6 +86,23 @@ function withoutProcessSubstitution(command: string): string {
   return command.replace(/<\([^()]*\)/g, " ")
 }
 
+function withoutHeredocBodies(command: string): string {
+  // A heredoc body is data written to stdin, not an argument or a read. Strip
+  // `<<'DELIM' ... DELIM` blocks so prose that merely mentions `.env` is not
+  // mistaken for a secret read.
+  return command.replace(
+    /<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1[\s\S]*?\r?\n[ \t]*\2(?=\r?\n|$)/g,
+    " ",
+  )
+}
+
+function withoutRedirectionTargets(command: string): string {
+  // `cat > .env` writes; it does not read. Remove `> target` / `>> target` so a
+  // write destination is never treated as a read operand. `2>&1` is left alone
+  // (its target starts with `&`).
+  return command.replace(/\d*>>?\s*[^\s;|&]+/g, " ")
+}
+
 function shellTokens(command: string): string[] {
   return command
     .split(/\s+/)
@@ -102,13 +119,13 @@ function isSecretFilePath(token: string): boolean {
 
 function secretFileRead(command: string): string | undefined {
   if (SOURCED_PREFIX.test(command)) return undefined
-  const tokens = shellTokens(withoutProcessSubstitution(command))
+  const tokens = shellTokens(withoutRedirectionTargets(command))
   if (!tokens.some((token) => READ_UTILITIES.has(token.toLowerCase()))) return undefined
   return tokens.find(isSecretFilePath)
 }
 
 function secretFileStaged(command: string): string | undefined {
-  const tokens = shellTokens(withoutProcessSubstitution(command))
+  const tokens = shellTokens(withoutRedirectionTargets(command))
   const git = tokens.findIndex((token) => token.toLowerCase() === "git")
   if (git === -1 || tokens[git + 1]?.toLowerCase() !== "add") return undefined
   return tokens.slice(git + 2).find(isSecretFilePath)
@@ -142,12 +159,17 @@ function secretVarRedirected(command: string): string | undefined {
   return undefined
 }
 
+const ENV_DUMP_INVOCATION =
+  /(?:^|[;&|(]|\r?\n)\s*(?:(?:sudo|command|exec|nohup|time)\s+)*(?:[A-Za-z_][A-Za-z0-9_]*=[^\s;|&]*\s+)*(?:env|printenv|set)\b/
+
 function isEnvironmentDump(command: string): boolean {
-  if (!/\b(?:env|printenv|set)\b/.test(command)) return false
-  const redirect = /\b(?:env|printenv|set)\b[^>]*>>?\s*\S/
-  if (redirect.test(command)) return true
-  const pipe = /\b(?:env|printenv|set)\b[^|]*\|\s*([A-Za-z0-9_./-]+)/
-  const piped = command.match(pipe)
+  // Only a real `env`/`printenv`/`set` command dumps the environment. A property
+  // access like `process.env.HOME` or the filename `.env` is not one.
+  const match = command.match(ENV_DUMP_INVOCATION)
+  if (!match || match.index === undefined) return false
+  const rest = command.slice(match.index + match[0].length)
+  if (/>>?\s*\S/.test(rest)) return true
+  const piped = rest.match(/^\s*\|\s*([A-Za-z0-9_./-]+)/)
   return piped?.[1] ? TRANSMIT_COMMANDS.test(piped[1]) : false
 }
 

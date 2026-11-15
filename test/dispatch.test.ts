@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { readFileSync, unlinkSync } from "fs"
+import { existsSync, readFileSync, unlinkSync } from "fs"
 import { reviewAndReply } from "../src/dispatch.ts"
 import { parseConfig } from "../src/config.ts"
 import { SessionApprovalCache } from "../src/cache.ts"
@@ -742,6 +742,59 @@ describe("dispatch — headless auto-reject race", () => {
     const { harness } = await reviewResolvedMidFlight(req, cache)
 
     expect(cache.has("root1", req.action, req.always)).toBe(false)
+    expect(harness.replies).toHaveLength(0)
+  })
+
+  test("records a decision when the permission is already settled before the review starts", async () => {
+    const path = `/tmp/calibrated-access-dispatch-${crypto.randomUUID()}.jsonl`
+    const config = parseConfig({ provider: "typesafe", systemOneApiKey: "sk-test", mode: "shadow", diagnosticsPath: path })
+    const harness = makeHarness()
+    const controller = new AbortController()
+    controller.abort("permission resolved")
+
+    await reviewAndReply(
+      harness.context,
+      harness.client,
+      config,
+      request,
+      new SessionApprovalCache(),
+      performance.now(),
+      controller.signal,
+      okFetch(systemOneBody()),
+    )
+
+    const lines = readFileSync(path, "utf-8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+    unlinkSync(path)
+    const decision = lines.find((line) => line.event === "decision")
+    expect(decision).toBeDefined()
+    expect(decision!.mode).toBe("shadow")
+    expect(harness.replies).toHaveLength(0)
+  })
+
+  test("stays silent when disposed before the review starts", async () => {
+    const path = `/tmp/calibrated-access-dispatch-${crypto.randomUUID()}.jsonl`
+    const config = parseConfig({ provider: "typesafe", systemOneApiKey: "sk-test", mode: "shadow", diagnosticsPath: path })
+    const harness = makeHarness()
+    const controller = new AbortController()
+    controller.abort("plugin disposed")
+
+    await reviewAndReply(
+      harness.context,
+      harness.client,
+      config,
+      request,
+      new SessionApprovalCache(),
+      performance.now(),
+      controller.signal,
+      okFetch(systemOneBody()),
+    )
+
+    const written = existsSync(path)
+    if (written) unlinkSync(path)
+    expect(written).toBe(false)
     expect(harness.replies).toHaveLength(0)
   })
 })

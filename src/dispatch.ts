@@ -11,6 +11,20 @@ import { alternativesFor } from "./alternatives.ts"
 
 const ALWAYS_ENFORCED_POLICY_CODES = new Set(["catastrophic_delete", "explicit_user_prohibition"])
 
+// `permission.replied` aborts an in-flight review so the plugin never replies to
+// an already-settled permission (e.g. the headless auto-reject). That abort is
+// not a disposal: the review should still run to completion and record a
+// `decision` for calibration. Only a real disposal stops the work.
+const SETTLED_ABORT_REASON = "permission resolved"
+
+function settledAfterReply(signal: AbortSignal): boolean {
+  return signal.aborted && signal.reason === SETTLED_ABORT_REASON
+}
+
+function disposed(signal: AbortSignal): boolean {
+  return signal.aborted && !settledAfterReply(signal)
+}
+
 export async function reviewAndReply(
   context: RuntimeContext,
   client: ReviewerClient,
@@ -30,6 +44,7 @@ export async function reviewAndReply(
       // so a hard fast-path decision is never projected to shadow mode.
       const hardDecision = hardFindingDecision(hard)
       writeDiag(config, request, startedAt, hardDecision, "policy", undefined, findings)
+      if (signal.aborted) return
       if (hardDecision.kind === "allow") {
         await client.reply({ sessionID: request.sessionID, requestID: request.id, reply: "once", protocol: request.protocol })
       } else {
@@ -48,7 +63,10 @@ export async function reviewAndReply(
     }
 
     const rootSessionID = await resolveRootSessionID(context, request.sessionID)
-    if (signal.aborted || !rootSessionID) return
+    if (!rootSessionID) return
+    // A settled permission may still be reviewed for the calibration log; a
+    // disposed plugin must stop.
+    if (disposed(signal)) return
 
     const rawMessages = await listMessages(context, rootSessionID)
     routing = resolveRouting(rawMessages)
@@ -154,13 +172,15 @@ export async function reviewAndReply(
       context.resumeAfterDenial?.(request.sessionID, buildContinuationMessage(decision.reason, request.resources, decision.alternatives), routing)
     }
   } catch (error) {
-    if (signal.aborted) return
+    if (disposed(signal)) return
+    const settled = settledAfterReply(signal)
     if (config.mode === "shadow") {
       writeDiag(config, request, startedAt, { kind: "allow", reasonCode: "review_failed", reason: "Permission review failed; shadow mode allowed." }, "error", undefined)
-      await client.reply({ sessionID: request.sessionID, requestID: request.id, reply: "once", protocol: request.protocol }).catch(() => {})
+      if (!settled) await client.reply({ sessionID: request.sessionID, requestID: request.id, reply: "once", protocol: request.protocol }).catch(() => {})
       return
     }
     writeDiag(config, request, startedAt, { kind: "deny", reasonCode: "review_failed", reason: "Permission review failed." }, "error", undefined)
+    if (settled) return
     context.showToast?.({ title: "Blocked", message: "Permission review failed; blocked by default.", variant: "error", duration: 4_000 })
     await client.reply({
       sessionID: request.sessionID,
