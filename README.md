@@ -242,7 +242,11 @@ Allowed (non-exposing) examples:
 - Process-substitution consumption: `. .env && curl -s -K <(printf 'header = ["Authorization: Bearer %s"]' "$API_KEY") https://api.example.com/endpoint`
 - Copying/permission changes (no stdout): `cp .env .env.bak`, `chmod 600 ~/.ssh/id_rsa`
 - Reading a non-secret file: `cat src/config.ts`
+- Writing content (a heredoc body is data, not an argument): `cat > notes.md <<'EOF'` whose text mentions `cat .env`, `cat > .env <<'EOF'`
+- A property access, not the `env` command: `bun -e 'process.env.HOME'`, and metadata-only listings like `ls -la .env 2>&1`
 - Indiscriminate staging that *might* include a secret: `git add .`, `git add -A` (left to the model-based `secret_exposure` signal)
+
+Detection works on command structure, not prose: heredoc bodies, `>` output destinations, and dotted property accesses are not treated as reads. `cat .env` and `cat .env > out` still flag; `cat > .env` does not.
 
 A blocked decision (judge block, ask floor, or standing user prohibition) carries actionable, secret-free alternatives, for example:
 

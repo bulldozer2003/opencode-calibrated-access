@@ -99,19 +99,26 @@ describe("CalibratedAccessPlugin", () => {
     rmSync(path, { force: true })
   })
 
-  test("permission.replied cancels an in-flight review without replying", async () => {
+  test("permission.replied suppresses the reply but still records a decision", async () => {
+    const path = `/tmp/calibrated-access-plugin-${crypto.randomUUID()}.jsonl`
     let release: (() => void) | undefined
     const gate = new Promise<void>((resolve) => {
       release = resolve
     })
     const client = makeClient({ getGate: gate })
-    const hooks = await CalibratedAccessPlugin({ client }, {})
+    const hooks = await CalibratedAccessPlugin({ client }, { mode: "shadow", diagnosticsPath: path })
     const inFlight = hooks.event({ event: asked("per_3", "echo hi > /tmp/x") })
     await hooks.event({ event: replied("per_3") })
     release!()
     await inFlight
     expect(client.replies).toHaveLength(0)
+    const lines = readFileSync(path, "utf-8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+    expect(lines.some((line) => line.event === "decision")).toBe(true)
     await hooks.dispose()
+    rmSync(path, { force: true })
   })
 
   test("loads session messages from the SDK and honors explicit prohibitions", async () => {
